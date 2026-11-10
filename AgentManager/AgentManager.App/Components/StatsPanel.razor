@@ -1,0 +1,86 @@
+@using AgentManager.Core
+@using AgentManager.Core.Model
+
+<div class="send-backdrop" @onclick="OnClose">
+    <aside class="send-panel stats-panel" @onclick:stopPropagation="true">
+        <div class="send-head">
+            <span class="send-title">┤ STATS ├</span>
+            <span class="dim">every agent's time added up</span>
+            <span class="spacer"></span>
+            <button class="mini" title="Count from zero now. The stretch so far goes into this history." @onclick="OnReset">reset stats</button>
+            <button class="mini" @onclick="OnClose">esc</button>
+        </div>
+
+        <div class="stats-legend">
+            @foreach (var activity in Ascii.ACTIVITIES)
+            {
+                <span class="@Ascii.Css(activity)"><i class="stats-swatch"></i>@Ascii.Label(activity).ToLowerInvariant()</span>
+            }
+        </div>
+
+        <div class="stats-table">
+            <div class="stats-row stats-labels">
+                <span>from</span><span>length</span><span>agent time</span><span>split</span><span>on lane</span><span>tokens</span>
+            </div>
+            @Row(Current, History.LastOrDefault(), true)
+            @for (var i = History.Count - 1; i >= 0; i--)
+            {
+                @Row(History[i], i > 0 ? History[i - 1] : null, false)
+            }
+            @if (History.Count == 0)
+            {
+                <div class="stats-empty dim">nothing in the history yet: reset stats closes the first stretch</div>
+            }
+        </div>
+    </aside>
+</div>
+
+@code {
+    /// <summary>A stretch this short says nothing yet, so it shows no change against the one before.</summary>
+    private const double COMPARABLE_SECONDS = 600;
+
+    [Parameter, EditorRequired]
+    public StatsPeriod Current { get; set; } = default!;
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<StatsPeriod> History { get; set; } = [];
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    [Parameter]
+    public EventCallback OnReset { get; set; }
+
+    private RenderFragment Row(StatsPeriod period, StatsPeriod? before, bool isRunning) => __builder =>
+    {
+        var total = period.Split.Total;
+        var share = LaneShare(period);
+        <div class="stats-row @(isRunning ? "running" : "")" @key="@(period.From?.ToUnixTimeSeconds() ?? 0)">
+            <span>@(period.From is { } from ? Ascii.Day(from) + " " + from.LocalDateTime.ToString("HH:mm", CultureInfo.InvariantCulture) : "all sessions")</span>
+            <span>@(isRunning ? "running · " : "")@(period.From is { } start ? Ascii.Duration(period.To - start) : "—")</span>
+            <b>@Ascii.Duration(total)</b>
+            <span class="stats-bar">
+                @foreach (var activity in Ascii.ACTIVITIES.Where(a => period.Split[a] >= 1))
+                {
+                    <i class="@Ascii.Css(activity)" style="width:@Percent(period.Split[activity] / total)" title="@Ascii.Label(activity)  @Ascii.Duration(period.Split[activity])"></i>
+                }
+            </span>
+            <span class="a-lane">@Percent(share)@if (before is not null && before.Split.Total > 0 && total >= COMPARABLE_SECONDS)
+                {
+                    var change = share - LaneShare(before);
+                    <span class="@(change <= 0 ? "stats-better" : "stats-worse")"> @(change <= 0 ? "▼" : "▲")@Percent(Math.Abs(change))</span>
+                }</span>
+            <span>@Ascii.Tokens(period.Tokens)</span>
+        </div>
+    };
+
+    private static double LaneShare(StatsPeriod period)
+    {
+        return period.Split.Total > 0 ? period.Split.Lane / period.Split.Total : 0;
+    }
+
+    private static string Percent(double fraction)
+    {
+        return (fraction * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+    }
+}

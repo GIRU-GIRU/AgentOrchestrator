@@ -1,0 +1,420 @@
+<div class="card @Ascii.Css(Agent.State) @(Ascii.IsBuilding(Agent) ? "s-building" : "") @(Ascii.ShowsBug(Agent) ? "s-testing" : "") @(Selected ? "selected" : "") @(Agent.Pinned ? "pinned" : "") @(Agent.IsMasterAgent ? "master-card" : "") @(IsClosing ? "closing" : "") @(IsDimmed ? "dimmed" : "")"
+     data-flip="@Agent.Key"
+     style="--i:@Index; @PositionStyle --gold:@Gold"
+     @onclick="e => OnOpen.InvokeAsync((e.CtrlKey, Agent.Key))"
+     @oncontextmenu="e => OnMenu.InvokeAsync((e, Agent.Key))"
+     @oncontextmenu:preventDefault="true"
+     @oncontextmenu:stopPropagation="true"
+     data-kind="@Agent.Kind">
+
+    @if (Agent.IsMasterAgent)
+    {
+        <svg class="master-defs" aria-hidden="true">
+            <filter id="master-electric" x="-6%" y="-6%" width="112%" height="112%" color-interpolation-filters="sRGB">
+                <feTurbulence id="master-electric-noise" type="fractalNoise" baseFrequency="0.018 0.03" numOctaves="3" seed="1" />
+                <feDisplacementMap in="SourceGraphic" scale="9" xChannelSelector="R" yChannelSelector="G" />
+            </filter>
+        </svg>
+        <div class="master-glow" aria-hidden="true"></div>
+        <div class="master-line" aria-hidden="true"></div>
+        <div class="master-arc" aria-hidden="true"></div>
+    }
+
+    <div class="far-mark" aria-hidden="true">
+        <div class="fm-icons">
+            @if (Agent.IsMasterAgent)
+            {
+                <MasterIcon />
+            }
+            <KindIcon Kind="Agent.Kind" />
+        </div>
+        <div class="fm-state">@FarState</div>
+        <div class="fm-name">@Agent.Name</div>
+    </div>
+
+    <div class="glow"></div>
+
+    <div class="flash" @key="@("flash-" + Ascii.Css(Agent.State) + (Ascii.IsBuilding(Agent) ? "-build" : ""))"></div>
+
+    <div class="card-head">
+        <span class="corner c-@Ascii.Css(Agent.State) @(OffersClose || IsClosing ? "c-close-offer" : "")" @key="@("corner-" + Agent.State + OffersClose + IsClosing)" title="@(IsClosing ? "Closing its window" : OffersClose ? "Close this agent" : Agent.State == AgentState.Closed ? "Close for good" : Agent.StateReason)"
+              @onclick="CornerClick" @onclick:stopPropagation="@(Agent.State == AgentState.Closed || OffersClose)">
+            @switch (Agent.State)
+            {
+                case var _ when IsClosing:
+                    <span class="c-face">✕</span>
+                    break;
+                case AgentState.Finished when OffersClose:
+                    <span class="c-face">✕</span>
+                    break;
+                case AgentState.Working:
+                    <span class="ring big"></span>
+                    break;
+                case AgentState.NeedsInput:
+                    <span class="c-face">!</span>
+                    break;
+                case AgentState.Asked:
+                    <span class="c-face">?</span>
+                    break;
+                case AgentState.LaneBlocked:
+                    <span class="c-face">⧗</span>
+                    break;
+                case AgentState.UsingEditor:
+                    <span class="c-face">▶</span>
+                    break;
+                case AgentState.Paused:
+                    <span class="c-face">⏸</span>
+                    break;
+                case AgentState.Finished:
+                    <span class="c-face">✓</span>
+                    break;
+                case AgentState.Closed:
+                    <span class="c-face">✕</span>
+                    break;
+                default:
+                    <span class="c-face"></span>
+                    break;
+            }
+        </span>
+
+        @if (Agent.IsMasterAgent)
+        {
+            <div class="master-cpu" title="@Agent.Name: your main agent for the orchestrator and the agents"><MasterChip /></div>
+        }
+
+        <div class="legend @(Rename is null ? "" : "renaming")">
+            <KindIcon Kind="Agent.Kind" />
+            <span class="no">@Agent.Number.ToString("00", CultureInfo.InvariantCulture)</span>
+            @if (Rename is { } rename)
+            {
+                <RenameBox Name="@Agent.Name" Note="@rename.Note" IsBlocked="rename.IsBlocked" OnCommit="typed => OnRenameCommit.InvokeAsync((Agent.Key, typed))" OnCancel="OnRenameCancel" />
+            }
+            else
+            {
+                <span class="scr name" data-text="@Agent.Name"></span>
+            }
+            @if (Agent.Pinned)
+            {
+                <span class="pin">▲</span>
+            }
+        </div>
+
+        @if (IsClosing)
+        {
+            <div class="badge closing-badge" @key="@("badge-closing")" title="Waiting for its process to exit">✕ CLOSING</div>
+        }
+        else if (Ascii.Badge(Agent) is { Length: > 0 } badge)
+        {
+            <div class="badge" @key="@("badge-" + badge)" title="@Agent.StateReason">@if (Ascii.ShowsBug(Agent))
+                {
+                    <ActivityIcon Activity="Activity.Test" />
+                }@badge</div>
+        }
+    </div>
+
+    @if (Talk is { Total: > 0 } talk)
+    {
+        <span class="talk @(talk.LastAt is { } last && Now - last < TALK_FRESH ? "fresh" : "")" title="@talk.Sent sent · @talk.Received received">
+            <svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2.5 3.5h11v7h-6l-3 2.6v-2.6h-2z" />
+            </svg>
+            <span class="talk-count" @key="@("talk-" + talk.Total)">@talk.Total</span>
+        </span>
+    }
+
+    <BridgeStrip Bridges="Agent.Bridges" Now="Now" />
+
+    <div class="reply" @key="@("reply-" + Agent.LastTextAt?.ToUnixTimeMilliseconds())" title="@Agent.LastText">
+        <span class="reply-text">@(Reply ?? "no response yet")</span>
+        <span class="reply-age">@Ascii.Ago(Agent.LastTextAt, Now)</span>
+    </div>
+
+    <div class="line model">
+        <span class="bright">@ModelText</span>
+        @if (!string.IsNullOrEmpty(Agent.Effort))
+        {
+            <span class="dim">@@@Agent.Effort</span>
+        }
+        <span class="surface">@Agent.Surface</span>
+    </div>
+
+    <div class="line cwd" title="@Agent.Cwd">@Agent.Cwd</div>
+
+    <div class="graph-row">
+        <TokenGraph Values="Agent.UsageProfile" Id="@Agent.Number" IsLive="@(Agent.TokenRate >= 1)" />
+        <span class="rate @(Agent.TokenRate >= 1 ? "live" : "")">@RateText</span>
+    </div>
+
+    <div class="status">
+        @switch (Agent.State)
+        {
+            case var _ when IsClosing:
+                <span class="rule-text"><span class="blink">✕</span> closing its window@(ClosingFor)</span>
+                break;
+            case AgentState.Working:
+                break;
+            case AgentState.NeedsInput when NeedsInputText.Length > 0:
+                <span class="rule-text"><span class="blink">!</span> @NeedsInputText</span>
+                break;
+            case AgentState.NeedsInput:
+                break;
+            case AgentState.Asked:
+                <span class="rule-text"><span class="bob">?</span> @Ascii.Clip(Agent.QuestionText, 60)</span>
+                break;
+            case AgentState.LaneBlocked:
+                <span class="rule-text"><span class="hourglass"></span> @LaneText</span>
+                break;
+            case AgentState.UsingEditor:
+                <span class="rule-text">▶ @EditorText</span>
+                break;
+            case AgentState.Paused:
+                <span class="rule-text">⏸ @Ascii.Clip(Agent.StateReason, 60)</span>
+                break;
+            case AgentState.Finished:
+                <span class="rule-text">✓ finished @Ascii.Ago(Agent.NeedsInputSince ?? Agent.LastEventAt, Now)</span>
+                break;
+            case AgentState.Closed:
+                <span class="rule-text">✕ window closed · right-click to resume</span>
+                break;
+            default:
+                <span class="rule-text">○ @(Agent.IsRead ? "read" : Agent.HasPrompt ? "ready" : "unused")</span>
+                break;
+        }
+    </div>
+
+    <div class="prompts">
+        @foreach (var prompt in Agent.Prompts.TakeLast(PROMPTS_SHOWN).Reverse())
+        {
+            <div class="prompt" @key="prompt.At" title="@prompt.Text">
+                <span class="prompt-mark">›</span>
+                <span class="prompt-text">@prompt.Text</span>
+                <span class="prompt-age">@Ascii.Ago(prompt.At, Now)</span>
+            </div>
+        }
+        @if (Agent.Prompts.Count == 0)
+        {
+            <div class="prompt dim"><span class="prompt-mark">›</span> no prompt yet</div>
+        }
+    </div>
+
+    <div class="metrics">
+        <div><label>SESSION</label><b>@Ascii.Duration(Agent.Age(Now))</b></div>
+        <div><label>TOKENS</label><b class="num" data-value="@Agent.Tokens.Total"></b></div>
+        <div><label>CONTEXT</label><b>@ContextText</b></div>
+    </div>
+
+    <div class="split" title="@SplitTitle">
+        <span class="bar">
+            @foreach (var (activity, cells) in Ascii.Split(Agent.Split))
+            {
+                <span class="@Ascii.Css(activity)">@(new string('█', cells))</span>
+            }
+            @if (Agent.Split.Total <= 0)
+            {
+                <span class="dim">@(new string('░', Ascii.SPLIT_CELLS))</span>
+            }
+        </span>
+        <span class="legend-mini">
+            @foreach (var activity in Ascii.ACTIVITIES.Where(a => Agent.Split[a] >= 1))
+            {
+                <span><ActivityIcon Activity="activity" />&nbsp;<span class="dim">@Ascii.Short(Agent.Split[activity])</span></span>
+            }
+        </span>
+    </div>
+
+    <div class="foot">
+        @if (Agent.Lane is { } lane && lane.HoldsLane)
+        {
+            <span class="lane-held">▶ holds @lane.HeldKind · @Ascii.Duration(Now - (lane.HeldSince ?? Now))</span>
+        }
+        else if (Agent.Lane is { } today && (today.HeldSecondsToday > 0 || today.WaitedSecondsToday > 0))
+        {
+            <span class="dim"><span class="a-lane">▶</span> lane today @Ascii.Short(today.HeldSecondsToday) held · @Ascii.Short(today.WaitedSecondsToday) waited</span>
+        }
+        @if (Agent.RunningSubagents > 0)
+        {
+            <span class="subs live" title="@Agent.Subagents.Count used this session">◆ @Agent.RunningSubagents @(Agent.RunningSubagents == 1 ? "subagent" : "subagents") running</span>
+        }
+        @if (Agent.Lane?.TaskTitle is { } task)
+        {
+            <span class="task" title="@task">☰ @Ascii.Clip(task, 46)</span>
+        }
+    </div>
+
+    @if (IsClosing)
+    {
+        <div class="kill-scan" aria-hidden="true"></div>
+    }
+
+    @if (Agent.State == AgentState.Closed || IsClosing)
+    {
+        <div class="xmark" aria-hidden="true">
+            <svg viewBox="0 0 100 100" width="92" height="92">
+                <line x1="20" y1="20" x2="80" y2="80" />
+                <line x1="80" y1="20" x2="20" y2="80" />
+            </svg>
+        </div>
+    }
+</div>
+
+@code {
+    private const int PROMPTS_SHOWN = 2;
+
+    /// <summary>The badge's words, which far out are the only state that can be read; a card waiting on the user has no badge up close because its red says it.</summary>
+    private string FarState => IsClosing ? "✕ CLOSING" : Agent.State == AgentState.NeedsInput ? "! NEEDS YOU" : Ascii.Badge(Agent);
+
+    private const double GOLD_FULL_HOURS = 8;
+
+    [Parameter, EditorRequired]
+    public AgentSnapshot Agent { get; set; } = default!;
+
+    [Parameter]
+    public DateTimeOffset Now { get; set; }
+
+    [Parameter]
+    public bool Selected { get; set; }
+
+    [Parameter]
+    public int Index { get; set; }
+
+    [Parameter]
+    public EventCallback<(bool Ctrl, string Key)> OnOpen { get; set; }
+
+    [Parameter]
+    public EventCallback<(MouseEventArgs, string)> OnMenu { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnDismiss { get; set; }
+
+    [Parameter]
+    public bool OffersClose { get; set; }
+
+    [Parameter]
+    public bool IsClosing { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnCloseOffered { get; set; }
+
+    [Parameter]
+    public CardRename? Rename { get; set; }
+
+    [Parameter]
+    public EventCallback<(string Key, string Typed)> OnRenameCommit { get; set; }
+
+    [Parameter]
+    public EventCallback OnRenameCancel { get; set; }
+
+    [Parameter]
+    public ChatTally? Talk { get; set; }
+
+    private static readonly TimeSpan TALK_FRESH = TimeSpan.FromMinutes(5);
+
+    [Parameter]
+    public AgentManager.Core.State.CanvasPoint? Position { get; set; }
+
+    [Parameter]
+    public bool IsDimmed { get; set; }
+
+    /// <summary>In the dock, which places it: no position of its own, and hiding a card with none would hide this one.</summary>
+    [Parameter]
+    public bool IsDocked { get; set; }
+
+    private string PositionStyle => IsDocked ? "" : Position is { } at
+        ? string.Create(CultureInfo.InvariantCulture, $"left:{Math.Round(at.X)}px; top:{Math.Round(at.Y)}px; z-index:{at.Z + BASE_Z};")
+        : "visibility:hidden;";
+
+    /// <summary>Above the category boxes and the wires under the cards, whatever a card's own stacking number is.</summary>
+    private const int BASE_Z = 10;
+
+    private string ModelText => string.IsNullOrEmpty(Agent.Model) ? (Agent.Kind == AgentKind.Claude ? "Claude" : "Codex") : Agent.Model;
+
+    private Task CornerClick()
+    {
+        if (OffersClose)
+        {
+            return OnCloseOffered.InvokeAsync(Agent.Key);
+        }
+
+        return Agent.State == AgentState.Closed ? OnDismiss.InvokeAsync(Agent.Key) : Task.CompletedTask;
+    }
+
+    private string ClosingFor => Agent.ClosingSince is { } since && Now - since >= TimeSpan.FromSeconds(1) ? " · " + Ascii.Duration(Now - since) : "…";
+
+    private string Gold => Math.Clamp(Agent.Age(Now).TotalHours / GOLD_FULL_HOURS, 0, 1).ToString("0.###", CultureInfo.InvariantCulture);
+
+    private string RateText => Agent.TokenRate >= 1 ? Ascii.Tokens((long)Agent.TokenRate) + " tok/s" : "idle " + Ascii.Ago(Agent.LastEventAt, Now);
+
+    private string NeedsInputText
+    {
+        get
+        {
+            if (Agent.PendingQuestion && Agent.QuestionText is { } question)
+            {
+                return Ascii.Clip(question, 56);
+            }
+
+            if (Agent.WaitingFor is { } waiting)
+            {
+                return "waiting for " + waiting;
+            }
+
+            if (Agent.AsksQuestion && Agent.QuestionText is { } asked)
+            {
+                return Ascii.Clip(asked, 56);
+            }
+
+            return Ascii.Clip(Agent.StateReason, 56);
+        }
+    }
+
+    private string LaneText
+    {
+        get
+        {
+            var lane = Agent.Lane;
+            if (lane is null)
+            {
+                return "";
+            }
+
+            if (lane.Paused)
+            {
+                return "paused by your editor hold";
+            }
+
+            var behind = lane.QueuedBehind is { } ahead ? $" behind {ahead}" : "";
+            return $"#{lane.QueuePosition} for {lane.QueuedKind}{behind} · {Ascii.Duration(Now - (lane.QueuedSince ?? Now))}";
+        }
+    }
+
+    private string EditorText
+    {
+        get
+        {
+            if (Agent.Lane is not { HoldsLane: true } lane)
+            {
+                return Ascii.Clip(Agent.CurrentTool?.Detail, 60);
+            }
+
+            return string.IsNullOrEmpty(lane.HeldPurpose) ? $"holds {lane.HeldKind}" : Ascii.Clip(lane.HeldPurpose, 60);
+        }
+    }
+
+    private string ContextText
+    {
+        get
+        {
+            var tokens = Agent.Tokens;
+            if (tokens.Context <= 0)
+            {
+                return "—";
+            }
+
+            return tokens.ContextWindow > 0 ? $"{Ascii.Tokens(tokens.Context)} {tokens.Context * 100 / tokens.ContextWindow}%" : Ascii.Tokens(tokens.Context);
+        }
+    }
+
+    private string SplitTitle => string.Join("  ", Ascii.ACTIVITIES.Select(a => Ascii.Label(a) + " " + Ascii.Duration(Agent.Split[a])));
+
+    private string? Reply => Ascii.Plain(Agent.LastText);
+}

@@ -1,0 +1,79 @@
+@using AgentManager.Core
+@using AgentManager.Core.State
+@inject AgentHub Hub
+
+<div class="send-backdrop">
+    <aside class="send-panel restore-panel">
+        <div class="send-head">
+            <span class="send-title">┤ RESTORE AGENTS ├</span>
+            <span class="dim">open before Windows last restarted</span>
+        </div>
+
+        <div class="send-list">
+            @foreach (var window in Windows)
+            {
+                <label class="send-row restore-row" @key="window.Key">
+                    <input type="checkbox" checked="@(!unchosen.Contains(window.Key))" @onchange="e => Toggle(window.Key, e)" />
+                    <KindIcon Kind="window.Kind" />
+                    <span class="restore-text">
+                        <span class="send-name">@window.Name</span>
+                        <span class="restore-prompt dim" title="@window.LastPrompt">› @(window.LastPrompt ?? "")</span>
+                        <span class="restore-meta dim">@window.Cwd · active @Ascii.Ago(window.LastActiveAt, Now)</span>
+                    </span>
+                </label>
+            }
+        </div>
+
+        <div class="send-foot">
+            <span class="dim">each one resumes in its own terminal window, in its folder</span>
+            <span class="spacer"></span>
+            <button class="mini" disabled="@isRestoring" @onclick="Dismiss">dismiss</button>
+            <button class="send-go" disabled="@(isRestoring || ChosenCount == 0)" @onclick="RestoreAsync">@(isRestoring ? "restoring…" : $"restore {ChosenCount}")</button>
+        </div>
+    </aside>
+</div>
+
+@code {
+    private readonly HashSet<string> unchosen = [];
+
+    private bool isRestoring;
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<OpenWindowRecord> Windows { get; set; } = [];
+
+    [Parameter]
+    public DateTimeOffset Now { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnDone { get; set; }
+
+    private int ChosenCount => Windows.Count(w => !unchosen.Contains(w.Key));
+
+    private void Toggle(string key, ChangeEventArgs args)
+    {
+        if (args.Value is true)
+        {
+            unchosen.Remove(key);
+        }
+        else
+        {
+            unchosen.Add(key);
+        }
+    }
+
+    private async Task RestoreAsync()
+    {
+        isRestoring = true;
+        var keys = Windows.Where(w => !unchosen.Contains(w.Key)).Select(w => w.Key).ToList();
+        var results = await Hub.RestoreAsync(keys);
+        isRestoring = false;
+        var failed = results.Count(r => !r.IsSent);
+        await OnDone.InvokeAsync(failed == 0 ? $"▸ restoring {results.Count} agents" : $"▸ restored {results.Count - failed}, {failed} failed: {results.First(r => !r.IsSent).How}");
+    }
+
+    private async Task Dismiss()
+    {
+        Hub.DismissRestore("dismissed by the user");
+        await OnDone.InvokeAsync("restore list dismissed");
+    }
+}

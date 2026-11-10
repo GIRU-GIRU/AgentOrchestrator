@@ -1,0 +1,35 @@
+@if (Bridges.FirstOrDefault() is { } bridge)
+{
+    var others = Bridges.Count - 1;
+    <div class="bridge @(bridge.IsListening ? "listening" : "")" @key="@("bridge-" + bridge.Channel)" title="@Title">
+        <span class="bridge-tag">⇄</span>
+        <span class="bridge-peer-name">@PeerNames(bridge)</span>
+        <span>·</span>
+        <span class="bridge-channel">@bridge.Channel</span>
+        <span class="bridge-meta">· @Messages(bridge) · @Ascii.Ago(bridge.LastAt, Now)</span>
+        @if (others > 0)
+        {
+            <span class="bridge-others">+@others</span>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<BridgeInfo> Bridges { get; set; } = [];
+
+    [Parameter]
+    public DateTimeOffset Now { get; set; }
+
+    private string Title => string.Join('\n', Bridges.Select(b => $"{PeerNames(b)} · {b.Channel} · {Messages(b)} · {Ascii.Ago(b.LastAt, Now)}{(b.IsListening ? " · waiting for a reply" : "")}"));
+
+    private static string PeerNames(BridgeInfo bridge)
+    {
+        return string.Join(", ", bridge.Peers.Where(p => p.IsAlive).Select(p => p.Name));
+    }
+
+    private static string Messages(BridgeInfo bridge)
+    {
+        return bridge.Messages == 1 ? "1 msg" : bridge.Messages + " msgs";
+    }
+}

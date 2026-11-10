@@ -1,0 +1,367 @@
+@implements IDisposable
+@using AgentManager.Core.Chat
+@inject IJSRuntime JS
+@inject AgentHub Hub
+
+<aside class="chat" @ref="chatRoot">
+    <div class="panel-head">
+        <span class="panel-title">┤ CHAT MONITOR ├</span>
+        <span class="count dim">@Visible.Count msgs</span>
+        <span class="spacer"></span>
+        <button class="x" title="Hide the chat (c)" @onclick="OnClose">✕</button>
+    </div>
+
+    <div class="filters">
+        @if (MasterAgentKey is not null)
+        {
+            <button class="chip master-chip @(isMasterAgentOnly ? "on" : "")" title="Show only what @MasterAgent.NAME says and hears" @onclick="ToggleMasterAgentOnly"><MasterIcon />@MasterAgent.NAME</button>
+        }
+        @foreach (var (label, channel) in FILTERS)
+        {
+            <button class="chip @(IsOn(channel) ? "on" : "")" @onclick="() => Toggle(channel)">@label</button>
+        }
+        @if (AgentFilter is not null)
+        {
+            <button class="chip on agent" style="--c:@Ascii.Color(AgentFilter)" @onclick="() => OnClearAgent.InvokeAsync()">✕ @AgentFilterName</button>
+        }
+    </div>
+
+    @if (Conversations.Count > 0)
+    {
+        <div class="filters conversations">
+            @foreach (var conversation in Conversations)
+            {
+                <button class="chip @(conversation == conversationFilter ? "on" : "")" title="Show only #@conversation" @onclick="() => ToggleConversation(conversation)">@(conversation == conversationFilter ? "✕ " : "")#@conversation</button>
+            }
+        </div>
+    }
+
+    <div class="messages" @ref="scroller">
+        @if (Visible.Count > limit)
+        {
+            <button class="older" @onclick="() => limit += PAGE">▲ @(Visible.Count - limit) older</button>
+        }
+
+        @{
+            DateTime? lastDay = null;
+            ChatMessage? previous = null;
+        }
+
+        @foreach (var message in Visible.Skip(Math.Max(0, Visible.Count - limit)))
+        {
+            var day = message.At.LocalDateTime.Date;
+            if (lastDay != day)
+            {
+                lastDay = day;
+                previous = null;
+                <div class="day" @key="day">──── @Ascii.Day(message.At) ────</div>
+            }
+
+            var isContinued = previous is not null && previous.FromKey == message.FromKey && previous.From == message.From && previous.To == message.To && previous.Topic == message.Topic && (message.At - previous.At).TotalMinutes < 3;
+            previous = message;
+            var isLong = message.Text.Length > LONG_CHARS || message.Text.Count(c => c == '\n') > LONG_LINES;
+            var isOpen = expanded.Contains(message.Id);
+            var isMasterAgentSaying = IsMasterAgent(message.FromKey);
+            var isMasterAgentHearing = IsMasterAgent(message.ToKey);
+            var masterAgentClass = isMasterAgentSaying ? "master-said" : isMasterAgentHearing ? "master-heard" : "";
+            var senderColor = isMasterAgentSaying ? "var(--master)" : Ascii.Color(message.FromKey ?? message.From);
+            var recipientColor = isMasterAgentHearing ? "var(--master)" : Ascii.Color(message.ToKey ?? message.To);
+            var senderName = isMasterAgentSaying ? MasterAgent.NAME : message.From;
+            var recipientName = isMasterAgentHearing ? MasterAgent.NAME : ChatView.Recipients(message);
+
+            var isReply = conversationFilter is not null && message.From != Visible[0].From;
+
+            <div class="msg ch-@message.Channel.ToString().ToLowerInvariant() @(isContinued ? "cont" : "") @(isReply ? "msg-reply" : "") @masterAgentClass" @key="message.Id" style="--c:@senderColor">
+                @if (!isContinued)
+                {
+                    <div class="meta">
+                        <span class="time">@message.At.ToString("HH:mm:ss", CultureInfo.InvariantCulture)</span>
+                        @if (isMasterAgentSaying)
+                        {
+                            <MasterIcon />
+                        }
+                        <span class="from" title="@(message.FromKey is null ? message.From : null)" data-origin-key="@message.FromKey" data-origin-other="@message.ToKey" data-origin-name="@senderName">@senderName</span>
+                        <span class="arrow">→</span>
+                        <span class="to" style="color:@recipientColor" title="@(message.ToKey is null ? message.To : null)" data-origin-key="@message.ToKey" data-origin-other="@message.FromKey" data-origin-name="@recipientName">@recipientName</span>
+                        @if (message.Topic is { } topic)
+                        {
+                            <button class="tag tag-button" title="Show only #@topic" @onclick="() => ToggleConversation(topic)">#@topic</button>
+                        }
+                        else
+                        {
+                            <span class="tag">@Tag(message)</span>
+                        }
+                    </div>
+                }
+                <div class="msg-body @(isLong && !isOpen ? "clamped" : "")" title="@message.At.ToString("ddd d MMM HH:mm:ss", CultureInfo.InvariantCulture)">
+                    @if (message.Summary is { Length: > 0 } summary && message.Channel != ChatChannel.System)
+                    {
+                        <div class="summary">@summary</div>
+                    }
+                    @message.Text
+                </div>
+                @if (isLong)
+                {
+                    <button class="more" @onclick="() => ToggleExpanded(message.Id)">@(isOpen ? "▴ less" : "▾ more")</button>
+                }
+            </div>
+        }
+
+        @if (Visible.Count == 0)
+        {
+            <pre class="empty">
+  ┌──────────────────────────┐
+  │  no messages yet         │
+  │  agents talk here when   │
+  │  they message each other │
+  └──────────────────────────┘</pre>
+        }
+    </div>
+
+    @if (shownOrigin is { } origin)
+    {
+        <div class="origin-pop" id="origin-pop">
+            <div class="origin-body" style="--c:@Ascii.Color(origin.Key)">
+                <div class="origin-head">┌─ @origin.Name@if (origin.Found?.What is { } what)
+                    {
+                        <span class="origin-what"> · @what</span>
+                    }</div>
+                @if (origin.Found is null)
+                {
+                    <div class="origin-line">reading its transcript…</div>
+                }
+                else
+                {
+                    @foreach (var prompt in origin.Found.Prompts)
+                    {
+                        <div class="origin-item">
+                            <div class="origin-meta"><span>@prompt.Label</span><span class="origin-time">@prompt.At?.ToString("ddd d MMM HH:mm", CultureInfo.InvariantCulture)</span></div>
+                            <div class="origin-text @(prompt.IsNote ? "origin-is-note" : "")">@prompt.Text@if (prompt.CutChars > 0)
+                                {
+                                    <span class="origin-cut"> … @prompt.CutChars.ToString("N0", CultureInfo.InvariantCulture) more characters</span>
+                                }</div>
+                        </div>
+                    }
+                    @if (origin.Found.Note is { } note)
+                    {
+                        <div class="origin-line">@note</div>
+                    }
+                }
+            </div>
+        </div>
+    }
+</aside>
+
+@code {
+    /// <summary>Static so what has been read survives the panel closing, and is not read again.</summary>
+    private static readonly SessionOrigins ORIGINS = SessionOrigins.ForThisUser();
+
+    /// <summary>A name's popup opens with what it has if that comes this quickly, so a name already read never flashes "reading".</summary>
+    private static readonly TimeSpan ORIGIN_READING_AFTER = TimeSpan.FromMilliseconds(120);
+
+    private const int PAGE = 300;
+
+    private const int LONG_CHARS = 700;
+
+    private const int LONG_LINES = 9;
+
+    private const int MAX_CONVERSATIONS = 8;
+
+    private static readonly TimeSpan CONVERSATION_RECENT = TimeSpan.FromHours(3);
+
+    private static readonly (string Label, ChatChannel Channel)[] FILTERS =
+    [
+        ("peer", ChatChannel.Peer),
+        ("orch", ChatChannel.Orchestrator),
+        ("subagent", ChatChannel.Subagent),
+        ("system", ChatChannel.System),
+    ];
+
+    private readonly HashSet<string> expanded = [];
+
+    private ElementReference scroller;
+
+    private ElementReference chatRoot;
+
+    private DotNetObjectReference<ChatPanel>? selfReference;
+
+    private OriginShown? shownOrigin;
+
+    private int originRequest;
+
+    private bool isOriginUnplaced;
+
+    private int limit = PAGE;
+
+    private int renderedCount = -1;
+
+    private bool isMasterAgentOnly;
+
+    private string? conversationFilter;
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<ChatMessage> Messages { get; set; } = [];
+
+    [Parameter]
+    public string? MasterAgentKey { get; set; }
+
+    [Parameter]
+    public HashSet<ChatChannel> Hidden { get; set; } = [];
+
+    [Parameter]
+    public string? AgentFilter { get; set; }
+
+    [Parameter]
+    public string? AgentFilterName { get; set; }
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    [Parameter]
+    public EventCallback OnClearAgent { get; set; }
+
+    [Parameter]
+    public EventCallback<ChatChannel> OnToggle { get; set; }
+
+    private IReadOnlyList<ChatMessage> Visible { get; set; } = [];
+
+    private IReadOnlyList<string> Conversations { get; set; } = [];
+
+    protected override void OnParametersSet()
+    {
+        Refilter();
+    }
+
+    private void Refilter()
+    {
+        Visible = Messages
+            .Where(m => IsOn(m.Channel))
+            .Where(m => AgentFilter is null || m.FromKey == AgentFilter || m.ToKey == AgentFilter)
+            .Where(m => !ChatView.ShowsOnlyMasterAgent(isMasterAgentOnly, MasterAgentKey) || IsMasterAgent(m.FromKey) || IsMasterAgent(m.ToKey))
+            .Where(m => conversationFilter is null || m.Topic == conversationFilter)
+            .ToList();
+        var recent = DateTimeOffset.Now - CONVERSATION_RECENT;
+        Conversations = Messages
+            .Where(m => m.Topic is not null && m.At >= recent)
+            .GroupBy(m => m.Topic!)
+            .OrderByDescending(g => g.Max(m => m.At))
+            .Take(MAX_CONVERSATIONS)
+            .Select(g => g.Key)
+            .ToList();
+    }
+
+    private void ToggleConversation(string topic)
+    {
+        conversationFilter = conversationFilter == topic ? null : topic;
+        Refilter();
+    }
+
+    private void ToggleMasterAgentOnly()
+    {
+        isMasterAgentOnly = !isMasterAgentOnly;
+        Refilter();
+    }
+
+    private bool IsMasterAgent(string? key)
+    {
+        return MasterAgentKey is not null && key == MasterAgentKey;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            selfReference = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("fx.originHover", chatRoot, selfReference);
+        }
+
+        if (Visible.Count != renderedCount || firstRender)
+        {
+            var isFirst = renderedCount < 0 || firstRender;
+            renderedCount = Visible.Count;
+            await JS.InvokeVoidAsync("fx.chatStick", scroller, isFirst);
+        }
+
+        if (isOriginUnplaced)
+        {
+            isOriginUnplaced = false;
+            await JS.InvokeVoidAsync("fx.fitOrigin", "origin-pop");
+        }
+    }
+
+    [JSInvokable]
+    public Task ShowOriginJs(string key, string? otherKey, string name)
+    {
+        return InvokeAsync(async () =>
+        {
+            var request = ++originRequest;
+            var directories = Hub.Current.Orchestrators.Select(view => view.StateDir).ToList();
+            var reading = Task.Run(() => ORIGINS.Find(key, otherKey, directories));
+            await Task.WhenAny(reading, Task.Delay(ORIGIN_READING_AFTER));
+            if (!reading.IsCompleted)
+            {
+                PlaceOrigin(new OriginShown(key, name, null));
+            }
+
+            var found = await reading;
+            if (request == originRequest)
+            {
+                PlaceOrigin(found.IsEmpty ? null : new OriginShown(key, name, found));
+            }
+        });
+    }
+
+    [JSInvokable]
+    public Task HideOriginJs()
+    {
+        return InvokeAsync(() =>
+        {
+            originRequest++;
+            shownOrigin = null;
+            StateHasChanged();
+        });
+    }
+
+    private void PlaceOrigin(OriginShown? origin)
+    {
+        shownOrigin = origin;
+        isOriginUnplaced = origin is not null;
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        selfReference?.Dispose();
+    }
+
+    private bool IsOn(ChatChannel channel)
+    {
+        return !Hidden.Contains(channel);
+    }
+
+    private Task Toggle(ChatChannel channel)
+    {
+        return OnToggle.InvokeAsync(channel);
+    }
+
+    private void ToggleExpanded(string id)
+    {
+        if (!expanded.Remove(id))
+        {
+            expanded.Add(id);
+        }
+    }
+
+    private static string Tag(ChatMessage message)
+    {
+        return message.Channel switch
+        {
+            ChatChannel.Orchestrator => message.Topic is { } topic ? "#" + topic : "orch",
+            ChatChannel.Subagent => "agent",
+            ChatChannel.System => "system",
+            _ => "peer",
+        };
+    }
+
+    private sealed record OriginShown(string Key, string Name, SessionOrigin? Found);
+}

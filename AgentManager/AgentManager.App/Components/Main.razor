@@ -1,0 +1,1273 @@
+@implements IDisposable
+@inject AgentHub Hub
+@inject Desktop Desktop
+@inject IJSRuntime JS
+
+<div class="app @(isBooted ? "booted" : "booting") @(chatOpen ? "with-chat" : "")" @onclick="CloseMenu">
+
+    @if (!bootGone)
+    {
+        <div class="boot">
+            <pre class="logo">@LOGO</pre>
+            <div class="boot-lines">
+                <div style="--d:0">&gt; reading ~/.claude/sessions <span class="dots">..........</span> <span class="ok">ok</span></div>
+                <div style="--d:1">&gt; tailing transcripts <span class="dots">................</span> <span class="ok">ok</span></div>
+                <div style="--d:2">&gt; reading ~/.codex/sessions <span class="dots">..........</span> <span class="ok">ok</span></div>
+                <div style="--d:3">&gt; attaching orchestrator <span class="dots">.............</span> <span class="ok">ok</span></div>
+            </div>
+        </div>
+    }
+
+    <header class="topbar">
+        <div class="top-row">
+            <span class="pill">@snapshot.Agents.Count TOTAL</span>
+            <span class="counts">
+                @foreach (var (state, label) in STATE_LABELS)
+                {
+                    var count = snapshot.Agents.Count(a => a.State == state);
+                    if (count > 0)
+                    {
+                        <span class="count @Ascii.Css(state)">@count @label</span>
+                    }
+                }
+            </span>
+            @foreach (var view in snapshot.Orchestrators)
+            {
+                var isDaemonUp = view.IsDaemonUp(snapshot.At);
+                <span class="orch-daemon" title="The orchestrator's background process (@view.StateDir): it keeps the lane and queue up to date and resurrects agents. Red means it has stopped; the next orchestrator command or hook starts it again."><span class="@(isDaemonUp ? "daemon-up" : "daemon-down")">●</span> @(isDaemonUp ? "daemon" : "daemon down")</span>
+                @if (view.HoldOn)
+                {
+                    <span class="orch-hold">⏸ you have the editor · agents paused · @Ascii.Duration(snapshot.At - (view.HoldSince ?? snapshot.At))</span>
+                }
+            }
+            <span class="spacer"></span>
+            <input class="filter" placeholder="/ filter" @bind="filter" @bind:event="oninput" @bind:after="Refilter" @onclick:stopPropagation="true" id="filter" />
+            <span class="tokens" title="Every token the agents have used since the last stats reset, subagents included (mostly cached context re-read each turn), and the live rate across all of them.">tokens used <b>@Ascii.Tokens(Period.Tokens)</b>@if (snapshot.Agents.Sum(a => a.TokenRate) is var rate && rate >= 1)
+                {
+                    <span> · <b class="rate-now">@Ascii.Tokens((long)rate)/s</b> now</span>
+                }</span>
+            <ActivityPie Split="Period.Split" />
+            <button class="mini @(statsOpen ? "on" : "")" title="Reset the stats, and the history of past stretches" @onclick="ToggleStats" @onclick:stopPropagation="true">stats</button>
+            <button class="mini @(sendOpen ? "on" : "")" title="Send a message to every running agent, typed in as your prompt" @onclick="() => OpenSend(null)" @onclick:stopPropagation="true">send <span class="dim">a</span></button>
+            <button class="mini @(notesOpen ? "on" : "")" @onclick="ToggleNotes" @onclick:stopPropagation="true">notes <span class="dim">t</span></button>
+            <button class="mini @(Hub.Settings.SoundOn ? "on" : "")" title="Sounds when an agent waits on you or finishes" @onclick="ToggleSound" @onclick:stopPropagation="true">♪</button>
+            <button class="mini @(chatOpen ? "on" : "")" @onclick="ToggleChat" @onclick:stopPropagation="true">chat <span class="dim">c</span></button>
+        </div>
+        @if (snapshot.Error is { } error)
+        {
+            <div class="error">⚠ @error</div>
+        }
+    </header>
+
+    <div class="workspace">
+        @{ var board = Hub.Board(); var talk = Talk(); }
+        <main class="agent-canvas" id="canvas" @oncontextmenu="ShowNewMenu" @oncontextmenu:preventDefault="true">
+            <div class="canvas-dots" id="canvas-dots"></div>
+            <div class="canvas-world" id="canvas-world">
+                @foreach (var category in board.Categories)
+                {
+                    <CategoryBox @key="category.Id" Category="category" Stats="CanvasLayout.StatsOf(category, board.Cards, visible)" IsEditing="category.Id == editingCategory" OnMenu="ShowCategoryMenu" OnStartRename="StartCategoryRename" OnRenamed="CommitCategoryRename" />
+                }
+                <svg class="bridge-layer" id="bridge-under" aria-hidden="true"></svg>
+                @if (isBooted)
+                {
+                    var order = 0;
+                    foreach (var agent in visible.Where(a => !CanvasLayout.IsDocked(a)).OrderBy(a => a.Number).ThenBy(a => a.Key))
+                    {
+                        <AgentCard @key="agent.Key" Agent="agent" Now="snapshot.At" Index="order++" Talk="talk.GetValueOrDefault(agent.Key)" Selected="agent.Key == selectedKey" OnOpen="Click" OnMenu="ShowMenu" OnDismiss="key => Act(key, MenuAction.Dismiss)"
+                                   OffersClose="agent.Key == closeOffer && CardClose.CanOffer(agent)" OnCloseOffered="AcceptCloseOffer" IsClosing="IsBeingClosed(agent)"
+                                   Rename="@(agent.Key == renameKey ? rename : null)" OnRenameCommit="CommitRename" OnRenameCancel="CancelRename"
+                                   Position="board.Cards.GetValueOrDefault(agent.Key)" IsDimmed="dimmed.Contains(agent.Key)" />
+                    }
+                }
+                <svg class="bridge-layer bridge-over" id="bridge-over" aria-hidden="true"></svg>
+            </div>
+
+            @if (isBooted && visible.FirstOrDefault(CanvasLayout.IsDocked) is { } docked)
+            {
+                <div class="canvas-dock" id="canvas-dock">
+                    <AgentCard @key="docked.Key" Agent="docked" Now="snapshot.At" Talk="talk.GetValueOrDefault(docked.Key)" Selected="docked.Key == selectedKey" OnOpen="Click" OnMenu="ShowMenu" OnDismiss="key => Act(key, MenuAction.Dismiss)"
+                               OffersClose="docked.Key == closeOffer && CardClose.CanOffer(docked)" OnCloseOffered="AcceptCloseOffer" IsClosing="IsBeingClosed(docked)"
+                               Rename="@(docked.Key == renameKey ? rename : null)" OnRenameCommit="CommitRename" OnRenameCancel="CancelRename"
+                               IsDocked="true" IsDimmed="dimmed.Contains(docked.Key)" />
+                </div>
+            }
+
+            @if (visible.Count == 0 && !snapshot.IsLoading)
+            {
+                <pre class="empty">
+     ┌────────────────────────────────────┐
+     │   no agents in the last @(Hub.Settings.HistoryHours.ToString(CultureInfo.InvariantCulture).PadRight(2)) hours     │
+     │   right-click to start one         │
+     └────────────────────────────────────┘</pre>
+            }
+        </main>
+
+        @if (chatOpen)
+        {
+            <ChatPanel Messages="snapshot.Chat" MasterAgentKey="@snapshot.Agents.FirstOrDefault(a => a.IsMasterAgent)?.Key" Hidden="hiddenChannels" AgentFilter="@chatAgent" AgentFilterName="@ChatAgentName"
+                       OnClose="ToggleChat" OnClearAgent="() => chatAgent = null" OnToggle="ToggleChannel" />
+        }
+    </div>
+
+    <footer class="keys">
+        <span><b>←↑↓→</b> select</span><span><b>enter</b>/click raise window</span><span><b>z</b> details</span><span><b>m</b> mark read</span><span><b>f2</b> rename</span>
+        <span><b>right-click</b> options · empty space: new agent or category</span><span><b>drag</b> move · empty space: pan</span><span><b>wheel</b> zoom</span><span><b>space</b> fit all</span><span><b>ctrl+click</b> close a ✕ or finished</span><span><b>ctrl+z</b> undo a close or a deleted box</span><span><b>a</b> send to agents</span><span><b>c</b> chat</span><span><b>t</b> notes</span><span><b>/</b> filter</span><span><b>esc</b> close</span>
+    </footer>
+
+    @if (notesOpen)
+    {
+        <NotesPanel OnClose="ToggleNotes" />
+    }
+
+    @if (sendOpen)
+    {
+        <SendPanel Agents="snapshot.Agents" Only="@sendOnly" OnClose="CloseSend" />
+    }
+
+    @if (statsOpen)
+    {
+        <StatsPanel Current="Period" History="Hub.StatsHistory()" OnClose="ToggleStats" OnReset="ResetStats" />
+    }
+
+    @if (!snapshot.IsLoading && isBooted && Hub.PendingRestore() is { Count: > 0 } pending)
+    {
+        <RestorePanel Windows="pending" Now="snapshot.At" OnDone="RestoreDone" />
+    }
+
+    @if (detailKey is not null && snapshot.Agents.FirstOrDefault(a => a.Key == detailKey) is { } detailAgent)
+    {
+        <DetailPanel Agent="detailAgent" Now="snapshot.At" Messages="snapshot.Chat" OnClose="() => detailKey = null" OnAction="action => Act(detailAgent.Key, action)" />
+    }
+
+    @if (newMenu is { } spot)
+    {
+        var folder = Hub.DefaultFolder();
+        <div class="menu" id="menu" style="left:@(spot.X)px; top:@(spot.Y)px" @onclick:stopPropagation="true">
+            <div class="menu-head">┌─ new agent · @System.IO.Path.GetFileName(folder.TrimEnd('\\', '/'))</div>
+            <button class="menu-item" disabled="@(!Hub.CanStartMasterAgent)" @onclick="() => StartMasterAgent(AgentKind.Claude)">
+                <span class="caret">▸</span><MasterIcon /><span class="label master-label">New @MasterAgent.NAME</span><span class="master-kind"><KindIcon Kind="AgentKind.Claude" />Claude</span>
+            </button>
+            <button class="menu-item" disabled="@(!Hub.CanStartMasterAgent)" @onclick="() => StartMasterAgent(AgentKind.Codex)">
+                <span class="caret">▸</span><MasterIcon /><span class="label master-label">New @MasterAgent.NAME</span><span class="master-kind"><KindIcon Kind="AgentKind.Codex" />Codex</span>
+            </button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" @onclick="() => Launch(AgentKind.Claude, folder)">
+                <span class="caret">▸</span><KindIcon Kind="AgentKind.Claude" /><span class="label">New Claude</span>
+            </button>
+            <button class="menu-item" @onclick="() => Launch(AgentKind.Codex, folder)">
+                <span class="caret">▸</span><KindIcon Kind="AgentKind.Codex" /><span class="label">New Codex</span>
+            </button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" @onclick="AddCategory">
+                <span class="caret">+</span><span class="label">New category</span>
+            </button>
+        </div>
+    }
+
+    @if (categoryMenu is { } catSpot && Hub.Board().Categories.FirstOrDefault(c => c.Id == catSpot.Id) is { } menuCategory)
+    {
+        var folder = Hub.DefaultFolder();
+        <div class="menu" id="menu" style="left:@(catSpot.X)px; top:@(catSpot.Y)px" @onclick:stopPropagation="true">
+            <div class="menu-head">┌─ @menuCategory.Name</div>
+            <button class="menu-item" @onclick="() => Launch(AgentKind.Claude, folder)">
+                <span class="caret">▸</span><KindIcon Kind="AgentKind.Claude" /><span class="label">New Claude here</span>
+            </button>
+            <button class="menu-item" @onclick="() => Launch(AgentKind.Codex, folder)">
+                <span class="caret">▸</span><KindIcon Kind="AgentKind.Codex" /><span class="label">New Codex here</span>
+            </button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" @onclick="() => StartCategoryRename(menuCategory.Id)">
+                <span class="caret">▸</span><span class="label">Rename</span>
+            </button>
+            <div class="cat-swatches">
+                @foreach (var colour in CanvasLayout.COLOURS)
+                {
+                    <button class="cat-swatch @(colour == menuCategory.Colour ? "on" : "")" style="--cat:@colour" title="Use this colour" @onclick="() => RecolourCategory(menuCategory.Id, colour)"></button>
+                }
+            </div>
+            <div class="menu-sep"></div>
+            <button class="menu-item" @onclick="() => ResetCategoryTokens(menuCategory.Id)">
+                <span class="caret">↺</span><span class="label">Reset tokens</span><span class="hint">@Ascii.Tokens(menuCategory.Tokens)</span>
+            </button>
+            @foreach (var stretch in menuCategory.TokenHistory.TakeLast(TOKEN_STRETCHES_SHOWN).Reverse())
+            {
+                <div class="cat-past"><span>@Ascii.Tokens(stretch.Tokens)</span><span class="dim">until @stretch.To.ToLocalTime().ToString("d MMM HH:mm", CultureInfo.InvariantCulture)</span></div>
+            }
+            <div class="menu-sep"></div>
+            <button class="menu-item danger" @onclick="() => DeleteCategory(menuCategory.Id)">
+                <span class="caret">▸</span><span class="label">Delete category</span><span class="hint">agents stay</span>
+            </button>
+        </div>
+    }
+
+    @if (menu is { } open && snapshot.Agents.FirstOrDefault(a => a.Key == open.Key) is { } menuAgent)
+    {
+        <div class="menu" id="menu" style="left:@(open.X)px; top:@(open.Y)px" @onclick:stopPropagation="true">
+            <div class="menu-head">┌─ @menuAgent.Name</div>
+            @foreach (var item in MenuFor(menuAgent))
+            {
+                if (item is null)
+                {
+                    <div class="menu-sep"></div>
+                    continue;
+                }
+
+                var isArmed = item.Action == MenuAction.CloseAgent && armedClose == menuAgent.Key;
+                <button class="menu-item @(item.IsDanger ? "danger" : "") @(isArmed ? "armed" : "")" data-action="@item.Action" @onclick="() => ChooseAsync(menuAgent.Key, item.Action)">
+                    <span class="caret">▸</span><span class="label">@(isArmed ? "Click again to close it" : item.Label)</span><span class="hint">@item.Hint</span>
+                </button>
+            }
+        </div>
+    }
+
+    <div class="toasts">
+        @foreach (var toast in toasts)
+        {
+            <div class="toast @toast.Kind" @key="toast.Id">@toast.Text</div>
+        }
+    </div>
+</div>
+
+@code {
+    private const string LOGO = """
+ ▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀   █▀▄▀█ ▄▀█ █▄ █ ▄▀█ █▀▀ █▀▀ █▀█
+ █▀█ █▄█ ██▄ █ ▀█  █    █ ▀ █ █▀█ █ ▀█ █▀█ █▄█ ██▄ █▀▄
+""";
+
+    private static readonly TimeSpan MIN_BOOT = TimeSpan.FromMilliseconds(1700);
+
+    private static readonly TimeSpan SOUND_GAP = TimeSpan.FromSeconds(2);
+
+    private const int TOAST_MS = 2600;
+
+    private const int TOKEN_STRETCHES_SHOWN = 3;
+
+    /// <summary>For a toast about something that went wrong out of sight, which the user may only look at later.</summary>
+    private const int LONG_TOAST_MS = 20000;
+
+    /// <summary>How long the launch animation plays before the window comes up over it.</summary>
+    private static readonly TimeSpan LAUNCH_LEAD = TimeSpan.FromMilliseconds(350);
+
+    private static readonly TimeSpan BOOT_FADE = TimeSpan.FromMilliseconds(700);
+
+    /// <summary>A click on a finished card may be the first of a double click, so its raise waits this long for the second.</summary>
+    private static readonly TimeSpan DOUBLE_CLICK_WAIT = TimeSpan.FromMilliseconds(280);
+
+    /// <summary>Long enough for the session to record the name and the manager's next scans to read it.</summary>
+    private static readonly TimeSpan RENAME_TITLE_WAIT = TimeSpan.FromSeconds(8);
+
+    private static readonly (AgentState, string)[] STATE_LABELS =
+    [
+        (AgentState.UsingEditor, "using editor"),
+        (AgentState.Working, "working"),
+        (AgentState.NeedsInput, "need input"),
+        (AgentState.Asked, "asked"),
+        (AgentState.LaneBlocked, "on lane"),
+        (AgentState.Paused, "paused"),
+        (AgentState.Finished, "finished"),
+        (AgentState.Idle, "idle"),
+        (AgentState.Closed, "closed"),
+    ];
+
+    private readonly DateTimeOffset openedAt = DateTimeOffset.Now;
+
+    private readonly List<Toast> toasts = [];
+
+    private readonly HashSet<ChatChannel> hiddenChannels = [];
+
+    private HubSnapshot snapshot = HubSnapshot.Loading;
+
+    private List<AgentSnapshot> visible = [];
+
+    private DotNetObjectReference<Main>? selfReference;
+
+    private bool isBooted;
+
+    private bool bootGone;
+
+    private bool chatOpen = true;
+
+    private string filter = "";
+
+    private string? armedClose;
+
+    /// <summary>Cards the user just closed, so the animation starts on that click and not when the hub next reports it.</summary>
+    private readonly HashSet<string> closingNow = [];
+
+    /// <summary>Cards the user took off the grid, gone from it before the hub's next tick confirms.</summary>
+    private readonly HashSet<string> removedNow = [];
+
+    /// <summary>Which cards the hub said were closing at its last tick, so one that stops without leaving is known to have refused.</summary>
+    private Dictionary<string, AgentSnapshot> hubClosing = [];
+
+    private string? closeOffer;
+
+    private string? heldRaise;
+
+    private bool isCloseOfferNew;
+
+    private string? renameKey;
+
+    private CardRename rename = new(AgentRename.HINT, false);
+
+    private bool notesOpen;
+
+    private bool sendOpen;
+
+    private bool statsOpen;
+
+    private StatsPeriod Period => snapshot.Stats ?? new StatsPeriod(null, snapshot.At, TimeSplit.Empty, 0);
+
+    private string? sendOnly;
+
+    private (double X, double Y)? newMenu;
+
+    private Dictionary<string, AgentState>? lastStates;
+
+    private DateTimeOffset lastSound;
+
+    private string? selectedKey;
+
+    private HashSet<string> dimmed = [];
+
+    private (string Id, double X, double Y)? categoryMenu;
+
+    private string? editingCategory;
+
+    /// <summary>Where the next agent or box goes, in canvas units: the spot the menu was opened on.</summary>
+    private AgentManager.Core.State.CanvasCardSpot? menuWorld;
+
+    private string? detailKey;
+
+    private string? chatAgent;
+
+    private (string Key, double X, double Y)? menu;
+
+    private int toastId;
+
+    private bool renderQueued;
+
+    private string sentLinks = "";
+
+    private string? ChatAgentName => chatAgent is null ? null : snapshot.Agents.FirstOrDefault(a => a.Key == chatAgent)?.Name ?? "agent";
+
+    protected override void OnInitialized()
+    {
+        chatOpen = Hub.Settings.ChatOpen;
+        if (!Hub.Settings.ShowSystemMessages)
+        {
+            hiddenChannels.Add(ChatChannel.System);
+        }
+
+        snapshot = Hub.Current;
+        Hub.Changed += OnHubChanged;
+    }
+
+    protected override void OnParametersSet()
+    {
+        Refilter();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            selfReference = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("fx.init", selfReference);
+            var view = Hub.Board();
+            await JS.InvokeVoidAsync("canvas.init", selfReference, new { hasView = view.HasView, panX = view.PanX, panY = view.PanY, zoom = view.Zoom });
+        }
+
+        var links = isBooted ? AgentManager.Core.Transcripts.BridgeRules.Links(visible, snapshot.At) : [];
+        var linkStamp = string.Join('\n', links);
+        if (linkStamp != sentLinks)
+        {
+            sentLinks = linkStamp;
+            await JS.InvokeVoidAsync("bridges.update", links);
+        }
+
+        await JS.InvokeVoidAsync("fx.flip");
+        if (menu is not null || newMenu is not null || categoryMenu is not null)
+        {
+            await JS.InvokeVoidAsync("fx.fitMenu", "menu");
+        }
+    }
+
+    private void OnHubChanged()
+    {
+        if (renderQueued)
+        {
+            return;
+        }
+
+        renderQueued = true;
+        _ = InvokeAsync(() =>
+        {
+            renderQueued = false;
+            snapshot = Hub.Current;
+            SettleClosingCards();
+            closeOffer = snapshot.Agents.Any(a => a.Key == closeOffer && CardClose.CanOffer(a)) ? closeOffer : null;
+            renameKey = snapshot.Agents.Any(a => a.Key == renameKey && a.IsAlive) ? renameKey : null;
+            _ = PlaySounds();
+            var isReady = !snapshot.IsLoading && DateTimeOffset.Now - openedAt >= MIN_BOOT;
+            if (isReady && !isBooted)
+            {
+                isBooted = true;
+                _ = Task.Delay(BOOT_FADE).ContinueWith(_ => InvokeAsync(() =>
+                {
+                    bootGone = true;
+                    StateHasChanged();
+                }), TaskScheduler.Default);
+            }
+            Refilter();
+            StateHasChanged();
+        });
+    }
+
+    private bool IsBeingClosed(AgentSnapshot agent)
+    {
+        return agent.IsClosing || closingNow.Contains(agent.Key);
+    }
+
+    private void SettleClosingCards()
+    {
+        var byKey = snapshot.Agents.GroupBy(a => a.Key).ToDictionary(g => g.Key, g => g.First());
+        foreach (var key in closingNow.Concat(hubClosing.Keys).Distinct().Where(key => !byKey.ContainsKey(key)))
+        {
+            _ = JS.InvokeVoidAsync("fx.vanish", key);
+        }
+
+        foreach (var (key, was) in hubClosing)
+        {
+            if (byKey.TryGetValue(key, out var agent) && !agent.IsClosing && agent.IsAlive)
+            {
+                Notify($"{was.Name} did not close: its window is still open", "warn", LONG_TOAST_MS);
+            }
+        }
+
+        closingNow.RemoveWhere(key => !byKey.TryGetValue(key, out var agent) || agent.IsClosing);
+        removedNow.RemoveWhere(key => !byKey.ContainsKey(key));
+        hubClosing = snapshot.Agents.Where(a => a.IsClosing).ToDictionary(a => a.Key);
+    }
+
+    private void Refilter()
+    {
+        var term = filter.Trim();
+        visible = snapshot.Agents.Where(a => !removedNow.Contains(a.Key)).ToList();
+        dimmed = term.Length == 0 ? [] : visible.Where(a => !Matches(a, term)).Select(a => a.Key).ToHashSet();
+    }
+
+    private static bool Matches(AgentSnapshot agent, string term)
+    {
+        return new[] { agent.Name, agent.Title, agent.Cwd, agent.Model, agent.Lane?.TaskTitle }
+            .Any(text => text?.Contains(term, StringComparison.OrdinalIgnoreCase) == true);
+    }
+
+    private void Click((bool Ctrl, string Key) click)
+    {
+        var agent = snapshot.Agents.FirstOrDefault(a => a.Key == click.Key);
+        if (agent is not null && IsBeingClosed(agent))
+        {
+            return;
+        }
+
+        if (click.Ctrl && agent is not null && CardClose.ClosesOnCtrlClick(agent))
+        {
+            selectedKey = null;
+            Act(click.Key, agent.IsAlive ? MenuAction.CloseAgent : MenuAction.Dismiss);
+            return;
+        }
+
+        if (!click.Ctrl && agent is not null && CardClose.CanOffer(agent))
+        {
+            ClickFinished(click.Key);
+            return;
+        }
+
+        heldRaise = null;
+        _ = Open(click.Key);
+    }
+
+    /// <summary>
+    /// A second click within the wait offers the X and the window is never raised; otherwise the raise goes ahead, a moment late.
+    /// Only a card that can show the X waits, so every other click stays immediate.
+    /// </summary>
+    private void ClickFinished(string key)
+    {
+        selectedKey = key;
+        if (heldRaise == key)
+        {
+            heldRaise = null;
+            closeOffer = key;
+            isCloseOfferNew = true;
+            return;
+        }
+
+        heldRaise = key;
+        _ = Task.Delay(DOUBLE_CLICK_WAIT).ContinueWith(_ => InvokeAsync(() =>
+        {
+            if (heldRaise != key)
+            {
+                return Task.CompletedTask;
+            }
+
+            heldRaise = null;
+            return Open(key);
+        }), TaskScheduler.Default);
+    }
+
+    private void StartRename(string key)
+    {
+        if (snapshot.Agents.FirstOrDefault(a => a.Key == key) is not { } agent)
+        {
+            return;
+        }
+
+        var plan = AgentRename.Plan(agent);
+        if (!plan.CanType)
+        {
+            AgentManager.Core.Diagnostics.AppLog.Info("ui", $"#{agent.Number:00} {agent.Name}: no rename: {plan.Why}");
+            Notify($"{agent.Name}: {plan.Why}", "warn");
+            return;
+        }
+
+        AgentManager.Core.Diagnostics.AppLog.Info("ui", $"#{agent.Number:00} {agent.Name}: rename box opened");
+        menu = null;
+        renameKey = key;
+        rename = new CardRename(AgentRename.HINT, false);
+        _ = ReadRenameBox(agent);
+    }
+
+    private async Task ReadRenameBox(AgentSnapshot agent)
+    {
+        var box = await Task.Run(() => Hub.PeekComposer(agent.Key));
+        await InvokeAsync(() =>
+        {
+            if (renameKey == agent.Key)
+            {
+                rename = new CardRename(AgentRename.Note(agent.Kind, box), AgentRename.Blocker(agent.Kind, box) is not null);
+                StateHasChanged();
+            }
+        });
+    }
+
+    private void CancelRename()
+    {
+        renameKey = null;
+    }
+
+    private async Task CommitRename((string Key, string Typed) request)
+    {
+        if (snapshot.Agents.FirstOrDefault(a => a.Key == request.Key) is not { } agent)
+        {
+            renameKey = null;
+            return;
+        }
+
+        var name = AgentRename.CleanName(agent.Kind, request.Typed);
+        if (name.Problem is { } problem)
+        {
+            rename = new CardRename(problem, true);
+            return;
+        }
+
+        renameKey = null;
+        if (name.Name is not { } newName || newName == agent.Name)
+        {
+            return;
+        }
+
+        var result = await Task.Run(() => Hub.Rename(agent.Key, newName));
+        Notify($"{agent.Name}: {result.How}", result.IsSent ? "ok" : "warn");
+        if (result.IsSent)
+        {
+            _ = WarnIfTitleStays(agent.Key, agent.Name);
+        }
+    }
+
+    /// <summary>The card's title only ever comes from the session's own record, so a command that did not take shows as a title that never moved.</summary>
+    private async Task WarnIfTitleStays(string key, string oldName)
+    {
+        await Task.Delay(RENAME_TITLE_WAIT);
+        await InvokeAsync(() =>
+        {
+            if (snapshot.Agents.FirstOrDefault(a => a.Key == key) is { IsAlive: true } agent && agent.Name == oldName)
+            {
+                Notify($"{oldName}: the /rename went in, but its session has not recorded a new name", "warn");
+                StateHasChanged();
+            }
+        });
+    }
+
+    private void AcceptCloseOffer(string key)
+    {
+        closeOffer = null;
+        if (snapshot.Agents.FirstOrDefault(a => a.Key == key) is { } agent && CardClose.CanOffer(agent))
+        {
+            Act(key, MenuAction.CloseAgent);
+        }
+    }
+
+    private async Task Open(string key)
+    {
+        selectedKey = key;
+        var agent = snapshot.Agents.FirstOrDefault(a => a.Key == key);
+        if (agent is null)
+        {
+            return;
+        }
+
+        if (!agent.IsAlive)
+        {
+            await JS.InvokeVoidAsync("fx.shake", key);
+            Notify($"{agent.Name} is closed · right-click to resume it, ctrl+click to close it", "warn");
+            return;
+        }
+
+        await JS.InvokeVoidAsync("fx.launch", key);
+        await Task.Delay(LAUNCH_LEAD);
+        var result = Hub.Raise(key);
+        if (!result.IsRaised)
+        {
+            await JS.InvokeVoidAsync("fx.shake", key);
+            Notify($"{agent.Name}: {result.How}", "warn");
+        }
+    }
+
+    private IReadOnlyList<ChatMessage>? talkFor;
+
+    private Dictionary<string, ChatTally> talkCache = [];
+
+    /// <summary>Messages each agent sent and received (system notes left out), recounted only when the chat changes.</summary>
+    private Dictionary<string, ChatTally> Talk()
+    {
+        if (ReferenceEquals(talkFor, snapshot.Chat))
+        {
+            return talkCache;
+        }
+
+        var tally = new Dictionary<string, ChatTally>();
+        foreach (var message in snapshot.Chat.Where(m => m.Channel != ChatChannel.System))
+        {
+            if (message.FromKey is { } from)
+            {
+                var current = tally.GetValueOrDefault(from) ?? new ChatTally(0, 0, null);
+                tally[from] = current with { Sent = current.Sent + 1, LastAt = Later(current.LastAt, message.At) };
+            }
+
+            if (message.ToKey is { } to && to != message.FromKey)
+            {
+                var current = tally.GetValueOrDefault(to) ?? new ChatTally(0, 0, null);
+                tally[to] = current with { Received = current.Received + 1, LastAt = Later(current.LastAt, message.At) };
+            }
+        }
+
+        talkFor = snapshot.Chat;
+        talkCache = tally;
+        return tally;
+    }
+
+    private static DateTimeOffset Later(DateTimeOffset? a, DateTimeOffset b)
+    {
+        return a is { } value && value > b ? value : b;
+    }
+
+    private async Task<AgentManager.Core.State.CanvasCardSpot> WorldAt(double clientX, double clientY)
+    {
+        var at = await JS.InvokeAsync<WorldPoint>("canvas.worldAt", clientX, clientY);
+        return new AgentManager.Core.State.CanvasCardSpot(at.X, at.Y);
+    }
+
+    private sealed record WorldPoint(double X, double Y);
+
+    private async Task ShowCategoryMenu((MouseEventArgs Args, string Id) request)
+    {
+        menu = null;
+        newMenu = null;
+        menuWorld = await WorldAt(request.Args.ClientX, request.Args.ClientY);
+        categoryMenu = (request.Id, request.Args.ClientX, request.Args.ClientY);
+        StateHasChanged();
+    }
+
+    private void AddCategory()
+    {
+        newMenu = null;
+        if (menuWorld is { } at)
+        {
+            editingCategory = Hub.AddCategory(at.X, at.Y).Id;
+        }
+    }
+
+    private void StartCategoryRename(string id)
+    {
+        categoryMenu = null;
+        editingCategory = id;
+    }
+
+    private void CommitCategoryRename((string Id, string? Typed) rename)
+    {
+        editingCategory = null;
+        if (rename.Typed is not null)
+        {
+            Hub.RenameCategory(rename.Id, rename.Typed);
+        }
+    }
+
+    private void RecolourCategory(string id, string colour)
+    {
+        Hub.RecolourCategory(id, colour);
+    }
+
+    private void ResetCategoryTokens(string id)
+    {
+        categoryMenu = null;
+        Hub.ResetCategoryTokens(id);
+        Notify("✓ tokens reset; the old figure is kept under right-click", "ok");
+    }
+
+    private void DeleteCategory(string id)
+    {
+        categoryMenu = null;
+        Hub.DeleteCategory(id);
+    }
+
+    [JSInvokable]
+    public void CanvasViewJs(double panX, double panY, double zoom, double width, double height)
+    {
+        Hub.SetCanvasView(panX, panY, zoom, width, height);
+    }
+
+    [JSInvokable]
+    public void CanvasCardMovedJs(AgentManager.Core.State.CanvasCardMove move)
+    {
+        Hub.MoveCards([move]);
+        Rerender();
+    }
+
+    [JSInvokable]
+    public void CanvasBoxMovedJs(string id, double x, double y, AgentManager.Core.State.CanvasCardMove[] carried)
+    {
+        Hub.MoveCategory(id, x, y, carried);
+        Rerender();
+    }
+
+    [JSInvokable]
+    public void CanvasBoxResizedJs(string id, double width, double height)
+    {
+        Hub.ResizeCategory(id, width, height);
+        Rerender();
+    }
+
+    private void Rerender()
+    {
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void ShowMenu((MouseEventArgs Args, string Key) request)
+    {
+        newMenu = null;
+        categoryMenu = null;
+        selectedKey = request.Key;
+        menu = (request.Key, request.Args.ClientX, request.Args.ClientY);
+    }
+
+    private void CloseMenu()
+    {
+        menu = null;
+        newMenu = null;
+        categoryMenu = null;
+        armedClose = null;
+        closeOffer = isCloseOfferNew ? closeOffer : null;
+        isCloseOfferNew = false;
+    }
+
+    private async Task ShowNewMenu(MouseEventArgs args)
+    {
+        menu = null;
+        categoryMenu = null;
+        menuWorld = await WorldAt(args.ClientX, args.ClientY);
+        newMenu = (args.ClientX, args.ClientY);
+        StateHasChanged();
+    }
+
+    private void Launch(AgentKind kind, string folder)
+    {
+        newMenu = null;
+        categoryMenu = null;
+        try
+        {
+            Hub.NewAgent(kind, folder, menuWorld);
+            Notify($"▸ new {kind} in {System.IO.Path.GetFileName(folder.TrimEnd('\\', '/'))}", "ok");
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            AgentManager.Core.Diagnostics.AppLog.Error("ui", $"could not start a new {kind}", exception);
+            Notify($"could not start {kind}: {exception.Message}", "warn");
+        }
+    }
+
+    private void StartMasterAgent(AgentKind kind)
+    {
+        newMenu = null;
+        try
+        {
+            if (Hub.StartNewMasterAgent(kind, DateTimeOffset.Now))
+            {
+                Notify($"▣ {MasterAgent.NAME} ONLINE · {kind}", "ok");
+            }
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            Notify($"could not start {MasterAgent.NAME}: {exception.Message}", "warn");
+        }
+    }
+
+    private List<MenuItem?> MenuFor(AgentSnapshot agent)
+    {
+        var tool = agent.Kind == AgentKind.Claude ? "Claude Code" : "Codex";
+        var items = new List<MenuItem?> { new(MenuAction.Details, "View details", "z") };
+        if (agent.IsAlive)
+        {
+            items.Add(new MenuItem(MenuAction.Raise, "Raise its window", "enter"));
+        }
+
+        if (agent.IsAlive && !agent.IsMasterAgent && !AgentManager.Core.Transcripts.BridgeRules.IsAstraTitle(agent.Name))
+        {
+            items.Add(new MenuItem(MenuAction.Rename, "Rename window (/rename)", "f2"));
+        }
+
+        if (agent.State is AgentState.NeedsInput or AgentState.Asked)
+        {
+            items.Add(new MenuItem(MenuAction.MarkRead, "Mark as read", "m"));
+        }
+        else if (agent.IsRead)
+        {
+            items.Add(new MenuItem(MenuAction.MarkUnread, "Mark as unread", "m"));
+        }
+
+        if (!agent.IsAlive)
+        {
+            items.Add(new MenuItem(MenuAction.Resume, $"Open in {tool} (/resume)", "r"));
+        }
+
+        var pinLabel = agent.IsMasterAgent ? (agent.Pinned ? "Unpin (onto the canvas)" : "Pin (dock top left)") : agent.Pinned ? "Unpin" : "Pin to the top";
+        items.Add(new MenuItem(MenuAction.Pin, pinLabel, "p"));
+        if (agent.IsAlive)
+        {
+            items.Add(new MenuItem(MenuAction.SendMessage, "Send a message…", ""));
+        }
+
+        items.Add(new MenuItem(MenuAction.ShowMessages, "Show its messages", ""));
+        items.Add(null);
+        items.Add(new MenuItem(MenuAction.CopyResume, "Copy resume command", ""));
+        items.Add(new MenuItem(MenuAction.CopySessionId, "Copy session id", ""));
+        items.Add(new MenuItem(MenuAction.CopyLastText, "Copy last message", ""));
+        items.Add(new MenuItem(MenuAction.OpenFolder, "Open folder", ""));
+        items.Add(new MenuItem(MenuAction.RevealTranscript, "Reveal transcript", ""));
+        items.Add(null);
+        if (agent.IsAlive)
+        {
+            items.Add(new MenuItem(MenuAction.Dismiss, "Hide until it acts", "del"));
+        }
+
+        items.Add(agent.IsAlive
+            ? new MenuItem(MenuAction.CloseAgent, "Close window", CardClose.ClosesOnCtrlClick(agent) ? "ctrl+click" : "", true)
+            : new MenuItem(MenuAction.Dismiss, "Close window", "ctrl+click", true));
+        return items;
+    }
+
+    private Task ChooseAsync(string key, MenuAction action)
+    {
+        var needsConfirm = action == MenuAction.CloseAgent && armedClose != key;
+        if (needsConfirm)
+        {
+            armedClose = key;
+            return Task.CompletedTask;
+        }
+
+        armedClose = null;
+        menu = null;
+        Act(key, action);
+        return Task.CompletedTask;
+    }
+
+    private void Act(string key, MenuAction action)
+    {
+        var agent = snapshot.Agents.FirstOrDefault(a => a.Key == key);
+        if (agent is null)
+        {
+            return;
+        }
+
+        switch (action)
+        {
+            case MenuAction.Details:
+                detailKey = key;
+                break;
+            case MenuAction.Raise:
+                _ = Open(key);
+                break;
+            case MenuAction.MarkRead:
+                Hub.MarkRead(key);
+                Notify($"✓ {agent.Name} marked read", "ok");
+                break;
+            case MenuAction.MarkUnread:
+                Hub.MarkUnread(key);
+                break;
+            case MenuAction.Resume:
+                Hub.Resume(key);
+                Notify($"▸ {agent.ResumeCommand}", "ok");
+                break;
+            case MenuAction.CloseAgent:
+                BeginClose(agent);
+                break;
+            case MenuAction.Dismiss:
+                _ = JS.InvokeVoidAsync("fx.vanish", key);
+                removedNow.Add(key);
+                Refilter();
+                detailKey = detailKey == key ? null : detailKey;
+                _ = Task.Run(() => Hub.Dismiss(key));
+                break;
+            case MenuAction.Rename:
+                StartRename(key);
+                break;
+            case MenuAction.Pin:
+                Hub.TogglePin(key);
+                break;
+            case MenuAction.ShowMessages:
+                chatAgent = key;
+                SetChat(true);
+                break;
+            case MenuAction.SendMessage:
+                OpenSend(key);
+                break;
+            case MenuAction.CopyResume:
+                Copy(agent.ResumeCommand);
+                break;
+            case MenuAction.CopySessionId:
+                Copy(agent.SessionId);
+                break;
+            case MenuAction.CopyLastText:
+                Copy(agent.LastText ?? "");
+                break;
+            case MenuAction.OpenFolder:
+                AgentManager.Core.Windows.Launcher.OpenFolder(agent.Cwd ?? "");
+                break;
+            case MenuAction.RevealTranscript:
+                AgentManager.Core.Windows.Launcher.RevealFile(agent.TranscriptPath);
+                break;
+        }
+    }
+
+    /// <summary>The animation starts on the click; asking the window to close attaches to a console and reads the process table, which would stall the page.</summary>
+    private void BeginClose(AgentSnapshot agent)
+    {
+        if (IsBeingClosed(agent))
+        {
+            return;
+        }
+
+        closingNow.Add(agent.Key);
+        detailKey = detailKey == agent.Key ? null : detailKey;
+        _ = FinishClose(agent);
+    }
+
+    private async Task FinishClose(AgentSnapshot agent)
+    {
+        var closed = await Task.Run(() => Hub.CloseAgent(agent.Key));
+        if (closed.IsRaised)
+        {
+            return;
+        }
+
+        await InvokeAsync(() =>
+        {
+            closingNow.Remove(agent.Key);
+            Notify($"{agent.Name}: {closed.How}", "warn");
+            StateHasChanged();
+        });
+    }
+
+    private void Copy(string text)
+    {
+        Desktop.Copy(text);
+        Notify("⧉ copied", "ok");
+    }
+
+    private void OpenSend(string? only)
+    {
+        sendOnly = only;
+        sendOpen = true;
+        menu = null;
+        AgentManager.Core.Diagnostics.AppLog.Info("ui", only is null ? "send panel opened for every agent" : $"send panel opened for {only}");
+    }
+
+    private void CloseSend()
+    {
+        sendOpen = false;
+        sendOnly = null;
+    }
+
+    private void ToggleStats()
+    {
+        statsOpen = !statsOpen;
+    }
+
+    private void ResetStats()
+    {
+        if (Hub.ResetStats(DateTimeOffset.Now))
+        {
+            Notify("stats reset: the stretch so far is in the history", "ok");
+        }
+    }
+
+    private void RestoreDone(string text)
+    {
+        Notify(text, "ok");
+    }
+
+    private void ToggleNotes()
+    {
+        notesOpen = !notesOpen;
+        AgentManager.Core.Diagnostics.AppLog.Info("ui", notesOpen ? "notes opened" : "notes closed");
+    }
+
+    private void ToggleSound()
+    {
+        Hub.ChangeSettings(s => s.SoundOn = !s.SoundOn);
+    }
+
+    /// <summary>
+    /// A soft rising pair when an agent starts waiting on the user (a prompt, a question, a question while it works), a
+    /// soft falling pair when it finishes its turn; one sound at a time, none for what was already so at startup.
+    /// </summary>
+    private async Task PlaySounds()
+    {
+        if (snapshot.IsLoading)
+        {
+            return;
+        }
+
+        var states = snapshot.Agents.ToDictionary(a => a.Key, a => a.State);
+        var previous = lastStates;
+        lastStates = states;
+        if (previous is null || !Hub.Settings.SoundOn || DateTimeOffset.Now - lastSound < SOUND_GAP)
+        {
+            return;
+        }
+
+        string? sound = null;
+        foreach (var agent in snapshot.Agents)
+        {
+            var before = previous.GetValueOrDefault(agent.Key, agent.State);
+            var wasBusy = before is AgentState.Working or AgentState.UsingEditor or AgentState.LaneBlocked or AgentState.Asked;
+            if (agent.State == before || !wasBusy)
+            {
+                continue;
+            }
+
+            var isWaiting = agent.State is AgentState.Asked or AgentState.NeedsInput;
+            var isFinished = agent.State is AgentState.Finished or AgentState.Paused;
+            sound = isWaiting ? "await" : isFinished ? sound ?? "finish" : sound;
+        }
+
+        if (sound is not null)
+        {
+            lastSound = DateTimeOffset.Now;
+            await JS.InvokeVoidAsync("fx.sound", sound);
+        }
+    }
+
+    private void ToggleChat()
+    {
+        SetChat(!chatOpen);
+    }
+
+    private void SetChat(bool open)
+    {
+        chatOpen = open;
+        Hub.ChangeSettings(s => s.ChatOpen = open);
+    }
+
+    private void ToggleChannel(ChatChannel channel)
+    {
+        if (!hiddenChannels.Remove(channel))
+        {
+            hiddenChannels.Add(channel);
+        }
+
+        if (channel == ChatChannel.System)
+        {
+            var show = !hiddenChannels.Contains(ChatChannel.System);
+            Hub.ChangeSettings(s => s.ShowSystemMessages = show);
+        }
+    }
+
+    [JSInvokable]
+    public void UndoRemovalJs()
+    {
+        _ = InvokeAsync(() =>
+        {
+            var step = Hub.BringBackLastRemoved(DateTimeOffset.Now);
+            if (step is RemovedCard card)
+            {
+                removedNow.Remove(card.Key);
+                closingNow.Remove(card.Key);
+            }
+
+            var back = step switch
+            {
+                RemovedCard removed => removed.Name,
+                DeletedCategory deleted => $"category {deleted.Category.Name}",
+                _ => null,
+            };
+            Notify(back is null ? "nothing to bring back" : $"↩ {back} is back", back is null ? "warn" : "ok");
+            StateHasChanged();
+        });
+    }
+
+    [JSInvokable]
+    public void OnJsError(string message)
+    {
+        AgentManager.Core.Diagnostics.AppLog.Error("js", message);
+    }
+
+    [JSInvokable]
+    public void OnKey(string key)
+    {
+        _ = InvokeAsync(() =>
+        {
+            HandleKey(key);
+            StateHasChanged();
+        });
+    }
+
+    private void HandleKey(string key)
+    {
+        switch (key)
+        {
+            case "Escape":
+                if (closeOffer is not null)
+                {
+                    closeOffer = null;
+                }
+                else if (menu is not null || newMenu is not null || categoryMenu is not null)
+                {
+                    menu = null;
+                    newMenu = null;
+                    categoryMenu = null;
+                }
+                else if (statsOpen)
+                {
+                    ToggleStats();
+                }
+                else if (sendOpen)
+                {
+                    CloseSend();
+                }
+                else if (notesOpen)
+                {
+                    notesOpen = false;
+                }
+                else if (detailKey is not null)
+                {
+                    detailKey = null;
+                }
+                else
+                {
+                    selectedKey = null;
+                }
+
+                break;
+            case "ArrowRight":
+                SelectToward(CanvasDirection.Right);
+                break;
+            case "ArrowLeft":
+                SelectToward(CanvasDirection.Left);
+                break;
+            case "ArrowDown":
+                SelectToward(CanvasDirection.Down);
+                break;
+            case "ArrowUp":
+                SelectToward(CanvasDirection.Up);
+                break;
+            case " ":
+                _ = JS.InvokeVoidAsync("canvas.fit", false);
+                break;
+            case "Enter" when selectedKey is not null:
+                _ = Open(selectedKey);
+                break;
+            case "z" when selectedKey is not null:
+                detailKey = detailKey == selectedKey ? null : selectedKey;
+                break;
+            case "m" when selectedKey is not null:
+                var agent = visible.FirstOrDefault(a => a.Key == selectedKey);
+                Act(selectedKey, agent?.IsRead == true ? MenuAction.MarkUnread : MenuAction.MarkRead);
+                break;
+            case "r" when selectedKey is not null && visible.FirstOrDefault(a => a.Key == selectedKey) is { IsAlive: false }:
+                Act(selectedKey, MenuAction.Resume);
+                break;
+            case "p" when selectedKey is not null:
+                Act(selectedKey, MenuAction.Pin);
+                break;
+            case "Delete" when selectedKey is not null:
+                Act(selectedKey, MenuAction.Dismiss);
+                break;
+            case "F2" when selectedKey is not null:
+                StartRename(selectedKey);
+                break;
+            case "c":
+                ToggleChat();
+                break;
+            case "t":
+                ToggleNotes();
+                break;
+            case "a":
+                OpenSend(null);
+                break;
+        }
+    }
+
+    private void SelectToward(CanvasDirection direction)
+    {
+        var shown = visible.Select(a => a.Key).ToHashSet();
+        var board = Hub.Board();
+        var cards = board.Cards.Where(card => shown.Contains(card.Key)).ToDictionary(card => card.Key, card => card.Value);
+        if (visible.FirstOrDefault(CanvasLayout.IsDocked) is { } docked)
+        {
+            cards[docked.Key] = CanvasLayout.DockedAt(board);
+        }
+
+        var next = selectedKey is { } from && cards.ContainsKey(from) ? CanvasLayout.Nearest(from, direction, cards) : CanvasLayout.First(cards);
+        if (next is not null)
+        {
+            selectedKey = next;
+            _ = JS.InvokeVoidAsync("canvas.reveal", next);
+        }
+    }
+
+    private void Notify(string text, string kind, int lasts = TOAST_MS)
+    {
+        var toast = new Toast(++toastId, text, kind);
+        toasts.Add(toast);
+        if (toasts.Count > 4)
+        {
+            toasts.RemoveAt(0);
+        }
+
+        _ = Task.Delay(lasts).ContinueWith(_ => InvokeAsync(() =>
+        {
+            toasts.Remove(toast);
+            StateHasChanged();
+        }), TaskScheduler.Default);
+    }
+
+    public void Dispose()
+    {
+        Hub.Changed -= OnHubChanged;
+        selfReference?.Dispose();
+    }
+
+    private sealed record Toast(int Id, string Text, string Kind);
+}

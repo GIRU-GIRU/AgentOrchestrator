@@ -1,0 +1,51 @@
+<svg class="graph @(IsLive ? "live" : "")" viewBox="0 0 @Width @HEIGHT" preserveAspectRatio="none" aria-hidden="true">
+    <defs>
+        <linearGradient id="fill-@Id" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="currentColor" stop-opacity=".45" />
+            <stop offset="1" stop-color="currentColor" stop-opacity="0" />
+        </linearGradient>
+    </defs>
+    <line class="graph-base" x1="0" y1="@(HEIGHT - 0.5)" x2="@Width" y2="@(HEIGHT - 0.5)" />
+    <g class="graph-draw">
+        <path d="@Area" fill="url(#fill-@Id)" />
+        <path d="@Line" class="graph-line" fill="none" />
+    </g>
+</svg>
+
+@code {
+    private const double HEIGHT = 30;
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<double> Values { get; set; } = [];
+
+    [Parameter]
+    public int Id { get; set; }
+
+    [Parameter]
+    public bool IsLive { get; set; }
+
+    private int Width => Math.Max(1, Values.Count - 1);
+
+    private string Line { get; set; } = "";
+
+    private string Area { get; set; } = "";
+
+    protected override void OnParametersSet()
+    {
+        if (Values.Count < 2)
+        {
+            Line = Area = "";
+            return;
+        }
+
+        var max = Math.Max(1, Values.Max()) * 1.12;
+        var points = Values.Select((v, i) => $"{i.ToString(CultureInfo.InvariantCulture)},{Y(v, max).ToString("0.##", CultureInfo.InvariantCulture)}");
+        Line = "M" + string.Join(" L", points);
+        Area = Line + $" L{Width},{HEIGHT} L0,{HEIGHT} Z";
+    }
+
+    private static double Y(double value, double max)
+    {
+        return HEIGHT - 1 - value / max * (HEIGHT - 3);
+    }
+}

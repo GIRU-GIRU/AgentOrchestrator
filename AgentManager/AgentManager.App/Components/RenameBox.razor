@@ -1,0 +1,55 @@
+@inject IJSRuntime JS
+
+<span class="rename-box" @onclick:stopPropagation="true" @oncontextmenu:stopPropagation="true">
+    <input id="@INPUT_ID" class="rename-input" value="@initial" maxlength="@AgentRename.MAX_NAME" spellcheck="false" autocomplete="off"
+           @oninput="e => typed = e.Value?.ToString() ?? string.Empty" @onkeydown="OnKey" @onblur="() => OnCancel.InvokeAsync()" />
+    <span class="rename-note @(IsBlocked ? "rename-blocked" : "")">@Note</span>
+</span>
+
+@code {
+    private const string INPUT_ID = "rename-input";
+
+    private string initial = "";
+
+    private string typed = "";
+
+    [Parameter, EditorRequired]
+    public string Name { get; set; } = "";
+
+    [Parameter]
+    public string Note { get; set; } = "";
+
+    [Parameter]
+    public bool IsBlocked { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnCommit { get; set; }
+
+    [Parameter]
+    public EventCallback OnCancel { get; set; }
+
+    /// <summary>The input is never rendered again after this, so a hub tick or a new title cannot touch what is being typed.</summary>
+    protected override void OnInitialized()
+    {
+        initial = Name;
+        typed = Name;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await JS.InvokeVoidAsync("fx.focusSelected", INPUT_ID);
+        }
+    }
+
+    private Task OnKey(KeyboardEventArgs e)
+    {
+        return e.Key switch
+        {
+            "Enter" => OnCommit.InvokeAsync(typed),
+            "Escape" => OnCancel.InvokeAsync(),
+            _ => Task.CompletedTask,
+        };
+    }
+}

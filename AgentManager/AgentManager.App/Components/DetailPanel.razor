@@ -1,0 +1,144 @@
+<aside class="detail @Ascii.Css(Agent.State)" @onclick:stopPropagation="true">
+    <div class="panel-head">
+        <span class="panel-title">┤ @Agent.Number.ToString("00", CultureInfo.InvariantCulture) @Agent.Name ├</span>
+        <span class="badge-inline">@Ascii.Badge(Agent)</span>
+        <span class="spacer"></span>
+        <button class="x" title="Close (Esc)" @onclick="OnClose">✕</button>
+    </div>
+
+    <div class="detail-body">
+        <section>
+            <div class="kv"><label>agent</label><span><KindIcon Kind="Agent.Kind" /> @Agent.Kind · @Agent.Surface · @Agent.Model @(string.IsNullOrEmpty(Agent.Effort) ? "" : "@" + Agent.Effort)</span></div>
+            <div class="kv"><label>last ask</label><span class="bright">@(Agent.Title ?? "—")</span></div>
+            @if (Agent.Lane?.TaskTitle is { } task)
+            {
+                <div class="kv"><label>ledger</label><span>☰ @task @(Agent.Lane.TaskNext is { } next ? " → " + next : "")</span></div>
+            }
+            <div class="kv"><label>folder</label><span class="link" @onclick="() => OnAction.InvokeAsync(MenuAction.OpenFolder)">@Agent.Cwd</span></div>
+            <div class="kv"><label>session</label><span class="link" title="Copy" @onclick="() => OnAction.InvokeAsync(MenuAction.CopySessionId)">@Agent.SessionId</span></div>
+            <div class="kv"><label>process</label><span>@(Agent.Pid?.ToString(CultureInfo.InvariantCulture) ?? "—") @(Agent.IsAlive ? "· alive" : "· closed")</span></div>
+            <div class="kv"><label>started</label><span>@Agent.StartedAt.ToString("ddd HH:mm:ss", CultureInfo.InvariantCulture) · @Ascii.Duration(Agent.Age(Now))</span></div>
+            <div class="kv"><label>last</label><span>@Ascii.Ago(Agent.LastEventAt, Now)</span></div>
+            <div class="kv"><label>resume</label><span class="link mono" @onclick="() => OnAction.InvokeAsync(MenuAction.CopyResume)">@Agent.ResumeCommand</span></div>
+        </section>
+
+        <section>
+            <h4>┤ TIME ├ <span class="dim">@Ascii.Duration(Agent.Split.Total) active</span></h4>
+            @{
+                var max = Ascii.ACTIVITIES.Max(a => Agent.Split[a]);
+            }
+            @foreach (var activity in Ascii.ACTIVITIES)
+            {
+                var seconds = Agent.Split[activity];
+                var cells = max <= 0 ? 0 : (int)Math.Round(seconds / max * BAR_CELLS);
+                <div class="meter">
+                    <label class="@Ascii.Css(activity)"><ActivityIcon Activity="activity" /> @Ascii.Label(activity)</label>
+                    <span class="@Ascii.Css(activity)">@(new string('█', cells))</span><span class="dim">@(new string('·', BAR_CELLS - cells))</span>
+                    <b>@Ascii.Duration(seconds)</b>
+                </div>
+            }
+        </section>
+
+        <section>
+            <h4>┤ TOKENS ├ <span class="dim">@Ascii.Tokens(Agent.Tokens.Total) total</span></h4>
+            <div class="kv"><label>input</label><span>@Ascii.Tokens(Agent.Tokens.Input)</span></div>
+            <div class="kv"><label>output</label><span>@Ascii.Tokens(Agent.Tokens.Output)</span></div>
+            <div class="kv"><label>cache read</label><span>@Ascii.Tokens(Agent.Tokens.CacheRead)</span></div>
+            <div class="kv"><label>cache write</label><span>@Ascii.Tokens(Agent.Tokens.CacheWrite)</span></div>
+            <div class="kv"><label>context</label><span>@Ascii.Tokens(Agent.Tokens.Context) @(Agent.Tokens.ContextWindow > 0 ? "of " + Ascii.Tokens(Agent.Tokens.ContextWindow) : "")</span></div>
+            <div class="kv"><label>subagents</label><span>@Ascii.Tokens(Agent.SubagentTokens)</span></div>
+            <div class="spark big">
+                @foreach (var cell in Ascii.Spark(Agent.Spark))
+                {
+                    <span class="l@(cell.Level)">@cell.Glyph</span>
+                }
+            </div>
+            <div class="dim small">tokens per minute, last @Agent.Spark.Count min</div>
+        </section>
+
+        @if (Agent.Lane is { } lane)
+        {
+            <section>
+                <h4>┤ ORCHESTRATOR ├ <span class="dim">@lane.Owner</span></h4>
+                <div class="kv"><label>lane</label><span>@(lane.HoldsLane ? $"holds {lane.HeldKind} · {Ascii.Duration(Now - (lane.HeldSince ?? Now))}" : lane.HeldKind is not null ? $"holds {lane.HeldKind}" : "—")</span></div>
+                @if (lane.HeldPurpose is { Length: > 0 } purpose)
+                {
+                    <div class="kv"><label>purpose</label><span>@purpose</span></div>
+                }
+                <div class="kv"><label>queue</label><span>@(lane.QueuedKind is not null ? $"#{lane.QueuePosition} for {lane.QueuedKind} · {Ascii.Duration(Now - (lane.QueuedSince ?? Now))}" : "—")</span></div>
+                <div class="kv"><label>hold</label><span>@(lane.Paused ? "paused by your hold" : "—")</span></div>
+                <div class="kv"><label>today</label><span>@Ascii.Duration(lane.HeldSecondsToday) held · @Ascii.Duration(lane.WaitedSecondsToday) waited · @lane.GrantsToday grants</span></div>
+            </section>
+        }
+
+        @if (Agent.Subagents.Count > 0)
+        {
+            <section>
+                <h4>┤ SUBAGENTS ├ <span class="dim">@Agent.RunningSubagents running · @Agent.Subagents.Count used this session</span></h4>
+                @foreach (var sub in Agent.Subagents.Take(12))
+                {
+                    <div class="row">
+                        <span class="@(sub.IsRunning ? "live" : "dim")">@(sub.IsRunning ? "◆" : "◇")</span>
+                        <span class="sub-type">@sub.Type</span>
+                        <span class="grow">@Ascii.Clip(sub.Description, 48)</span>
+                        <span class="dim">@Ascii.Tokens(sub.Tokens)</span>
+                    </div>
+                }
+            </section>
+        }
+
+        <section>
+            <h4>┤ TOOL CALLS ├ <span class="dim">last @Agent.RecentTools.Count</span></h4>
+            @foreach (var call in Agent.RecentTools.Reverse().Take(30))
+            {
+                <div class="row call @(call.IsRunning ? "running" : "")">
+                    <span class="dim">@call.Start.ToString("HH:mm:ss", CultureInfo.InvariantCulture)</span>
+                    <span class="@Ascii.Css(call.Activity)">▸ @call.Name</span>
+                    <span class="grow">@call.Detail</span>
+                    <span class="dim">@(call.IsRunning ? "running" : call.End is { } end ? Ascii.Duration(end - call.Start) : "")</span>
+                </div>
+            }
+        </section>
+
+        @if (!string.IsNullOrWhiteSpace(Agent.LastText))
+        {
+            <section>
+                <h4>┤ LAST SAID ├ <span class="dim">@Ascii.Ago(Agent.LastTextAt, Now)</span></h4>
+                <div class="said-full">@Agent.LastText</div>
+            </section>
+        }
+
+        <section>
+            <h4>┤ MESSAGES ├</h4>
+            @foreach (var message in Messages.Where(m => m.FromKey == Agent.Key || m.ToKey == Agent.Key).TakeLast(15))
+            {
+                <div class="row msg-mini">
+                    <span class="dim">@message.At.ToString("HH:mm", CultureInfo.InvariantCulture)</span>
+                    <span style="color:@Ascii.Color(message.FromKey ?? message.From)">@message.From</span>
+                    <span class="dim">→</span>
+                    <span style="color:@Ascii.Color(message.ToKey ?? message.To)">@message.To</span>
+                    <span class="grow">@Ascii.Clip(AgentManager.Core.Transcripts.Json.OneLine(message.Summary ?? message.Text), 70)</span>
+                </div>
+            }
+        </section>
+    </div>
+</aside>
+
+@code {
+    private const int BAR_CELLS = 24;
+
+    [Parameter, EditorRequired]
+    public AgentSnapshot Agent { get; set; } = default!;
+
+    [Parameter]
+    public DateTimeOffset Now { get; set; }
+
+    [Parameter]
+    public IReadOnlyList<ChatMessage> Messages { get; set; } = [];
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    [Parameter]
+    public EventCallback<MenuAction> OnAction { get; set; }
+}

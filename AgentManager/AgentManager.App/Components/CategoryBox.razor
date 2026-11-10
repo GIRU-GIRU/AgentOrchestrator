@@ -1,0 +1,95 @@
+@using AgentManager.Core.State
+@inject IJSRuntime JS
+
+<div class="cat-box" data-cat="@Category.Id" style="left:@Px(Category.X); top:@Px(Category.Y); width:@Px(Category.Width); height:@Px(Category.Height); --cat:@Category.Colour"
+     @oncontextmenu="e => OnMenu.InvokeAsync((e, Category.Id))" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
+    <div class="cat-head" @ondblclick="() => OnStartRename.InvokeAsync(Category.Id)">
+        @if (IsEditing)
+        {
+            <input id="@INPUT_ID" class="cat-name-input" value="@Category.Name" maxlength="@MAX_NAME" spellcheck="false" autocomplete="off"
+                   @oninput="e => typed = e.Value?.ToString()" @onkeydown="OnKey" @onblur="Commit" @onclick:stopPropagation="true" />
+        }
+        else
+        {
+            <span class="cat-name">@Category.Name<span class="cat-count" title="@Stats.Agents running @(Stats.Agents == 1 ? "agent" : "agents") in this box">@Stats.Agents</span></span>
+        }
+        <span class="cat-stats" title="Running agents in this box. Tokens since @Since; right-click to reset">
+            <span class="cat-stat cs-active @(Stats.Active > 0 ? "" : "cs-none")"><b>@Stats.Active</b> active</span>
+            @if (Stats.Waiting > 0)
+            {
+                <span class="cat-stat cs-waiting"><b>@Stats.Waiting</b> waiting</span>
+            }
+            @if (Stats.Claude > 0)
+            {
+                <span class="cat-stat cs-claude"><b>@Stats.Claude</b> claude</span>
+            }
+            @if (Stats.Codex > 0)
+            {
+                <span class="cat-stat cs-codex"><b>@Stats.Codex</b> codex</span>
+            }
+            <span class="cat-stat"><b>@(Category.Tokens > 0 ? Ascii.Tokens(Category.Tokens) : "0")</b> tokens</span>
+        </span>
+    </div>
+    <div class="cat-resize" aria-hidden="true"></div>
+</div>
+
+@code {
+    private const string INPUT_ID = "cat-name-input";
+
+    private const int MAX_NAME = 60;
+
+    private string? typed;
+
+    private bool wasEditing;
+
+    [Parameter, EditorRequired]
+    public CanvasCategory Category { get; set; } = default!;
+
+    [Parameter, EditorRequired]
+    public CategoryStats Stats { get; set; } = default!;
+
+    [Parameter]
+    public bool IsEditing { get; set; }
+
+    [Parameter]
+    public EventCallback<(MouseEventArgs, string)> OnMenu { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnStartRename { get; set; }
+
+    [Parameter]
+    public EventCallback<(string Id, string? Typed)> OnRenamed { get; set; }
+
+    private string Since => Category.TokensSince is { } since ? since.ToLocalTime().ToString("d MMM HH:mm", CultureInfo.InvariantCulture) : "it was made";
+
+    private static string Px(double value)
+    {
+        return Math.Round(value).ToString(CultureInfo.InvariantCulture) + "px";
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (IsEditing && !wasEditing)
+        {
+            typed = Category.Name;
+            await JS.InvokeVoidAsync("fx.focusSelected", INPUT_ID);
+        }
+
+        wasEditing = IsEditing;
+    }
+
+    private Task OnKey(KeyboardEventArgs e)
+    {
+        return e.Key switch
+        {
+            "Enter" => Commit(),
+            "Escape" => OnRenamed.InvokeAsync((Category.Id, null)),
+            _ => Task.CompletedTask,
+        };
+    }
+
+    private Task Commit()
+    {
+        return IsEditing ? OnRenamed.InvokeAsync((Category.Id, typed)) : Task.CompletedTask;
+    }
+}

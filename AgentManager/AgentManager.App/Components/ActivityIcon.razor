@@ -1,0 +1,17 @@
+@if (Activity == Activity.Test)
+{
+    <svg class="bug @Ascii.Css(Activity)" viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+        <ellipse cx="8" cy="9.6" rx="3.3" ry="4.1" fill="currentColor" stroke="none" />
+        <circle cx="8" cy="4.5" r="1.9" fill="currentColor" stroke="none" />
+        <path d="M4.8 7.6 2.4 6.4M4.6 10 2.1 10M5 12.4 2.8 13.9M11.2 7.6 13.6 6.4M11.4 10 13.9 10M11 12.4 13.2 13.9M7 3 5.9 1.6M9 3 10.1 1.6" />
+    </svg>
+}
+else
+{
+    <span class="@Ascii.Css(Activity)">@Ascii.Icon(Activity)</span>
+}
+
+@code {
+    [Parameter]
+    public Activity Activity { get; set; }
+}

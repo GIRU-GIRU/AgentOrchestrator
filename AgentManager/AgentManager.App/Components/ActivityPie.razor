@@ -1,0 +1,57 @@
+<div class="pie-wrap" title="@Tooltip">
+    <svg class="pie" viewBox="0 0 42 42" width="48" height="48" aria-hidden="true">
+        <circle class="pie-track" cx="21" cy="21" r="@RADIUS" />
+        @foreach (var slice in Slices)
+        {
+            <circle class="pie-slice @Ascii.Css(slice.Activity)" cx="21" cy="21" r="@RADIUS"
+                    stroke-dasharray="@Number(slice.Percent) @Number(100 - slice.Percent)"
+                    stroke-dashoffset="@Number(slice.Offset)" />
+        }
+    </svg>
+    <div class="pie-legend">
+        @foreach (var slice in Slices)
+        {
+            <span class="pie-row"><ActivityIcon Activity="slice.Activity" /> @Ascii.Label(slice.Activity).ToLowerInvariant() <b>@Ascii.Short(slice.Seconds)</b> <span class="dim">@Math.Round(slice.Percent)%</span></span>
+        }
+        @if (Slices.Count == 0)
+        {
+            <span class="dim">no activity yet</span>
+        }
+    </div>
+</div>
+
+@code {
+    private const string RADIUS = "15.9155";
+
+    private const double QUARTER = 25;
+
+    [Parameter, EditorRequired]
+    public TimeSplit Split { get; set; } = TimeSplit.Empty;
+
+    private IReadOnlyList<Slice> Slices { get; set; } = [];
+
+    private string Tooltip => string.Join("\n", Slices.Select(s => $"{Ascii.Label(s.Activity)}  {Ascii.Duration(s.Seconds)}  {Math.Round(s.Percent)}%"));
+
+    protected override void OnParametersSet()
+    {
+        var totals = Ascii.ACTIVITIES.Select(a => (Activity: a, Seconds: Split[a])).Where(t => t.Seconds >= 1).ToList();
+        var sum = totals.Sum(t => t.Seconds);
+        var slices = new List<Slice>();
+        var start = 0.0;
+        foreach (var (activity, seconds) in totals)
+        {
+            var percent = seconds / sum * 100;
+            slices.Add(new Slice(activity, seconds, percent, QUARTER - start));
+            start += percent;
+        }
+
+        Slices = slices;
+    }
+
+    private static string Number(double value)
+    {
+        return value.ToString("0.###", CultureInfo.InvariantCulture);
+    }
+
+    private sealed record Slice(Activity Activity, double Seconds, double Percent, double Offset);
+}

@@ -1,0 +1,13 @@
+<Project>
+
+  <ItemGroup>
+    <PackageVersion Include="Markdig" Version="1.4.0" />
+    <!-- Held at 9.x on purpose: from 10.0 BlazorWebView can only host WebView2CompositionControl, which hands every frame through Windows Graphics Capture and WPF. On the canvas that is slower to the screen and fewer frames a second than the direct window. -->
+    <PackageVersion Include="Microsoft.AspNetCore.Components.WebView.Wpf" Version="9.0.120" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageVersion Include="xunit.v3" Version="3.2.2" />
+  </ItemGroup>
+
+</Project>

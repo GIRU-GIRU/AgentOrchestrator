@@ -1,0 +1,137 @@
+@using AgentManager.Core
+@using AgentManager.Core.Model
+@inject AgentHub Hub
+@inject IJSRuntime JS
+
+<div class="send-backdrop" @onclick="Close">
+    <aside class="send-panel" @onclick:stopPropagation="true">
+        <div class="send-head">
+            <span class="send-title">┤ SEND TO AGENTS ├</span>
+            <span class="dim">typed into each agent's window as your prompt</span>
+            <span class="spacer"></span>
+            <button class="mini" @onclick="Close">esc</button>
+        </div>
+
+        <textarea class="send-text" id="send-text" rows="4" placeholder="what to tell them" @bind="text" @bind:event="oninput" @onkeydown="OnKeyDown"></textarea>
+
+        <div class="send-presets">
+            <button class="mini" @onclick="WrapUp">wrap up</button>
+            <span class="dim">ctrl+enter sends · newlines become spaces · anything half-typed in an agent's box is sent with it</span>
+        </div>
+
+        <div class="send-list">
+            @foreach (var plan in plans)
+            {
+                var isSkip = plan.Route == DeliveryRoute.Skip;
+                var result = results.GetValueOrDefault(plan.Key);
+                <label class="send-row @(isSkip ? "skip" : "") @(result is null ? "" : result.IsSent ? "sent" : "failed")" @key="plan.Key">
+                    <input type="checkbox" disabled="@isSkip" checked="@(!isSkip && chosen.Contains(plan.Key))" @onchange="e => Toggle(plan.Key, e)" />
+                    <span class="send-name">@plan.Name</span>
+                    <span class="send-why" title="@(result?.How ?? plan.Why)">@(result is null ? plan.Why : (result.IsSent ? "✓ " : "✕ ") + result.How)</span>
+                </label>
+            }
+            @if (plans.Count == 0)
+            {
+                <div class="dim">no agent is running</div>
+            }
+        </div>
+
+        <div class="send-foot">
+            <span class="dim">@Summary</span>
+            <span class="spacer"></span>
+            <button class="send-go" disabled="@(!CanSend)" @onclick="SendAsync">@(isSending ? "sending…" : $"send to {ChosenCount}")</button>
+        </div>
+    </aside>
+</div>
+
+@code {
+    private const string WRAP_UP = "Wrap up: I'm about to restart the PC. Get to a safe stopping point now: finish or stop what you're doing, release any orchestrator grants and queue entries, record where you are in your orchestrator task (update, block or hand it off), and tell me in one line what is left. Don't start anything new.";
+
+    private readonly HashSet<string> chosen = [];
+
+    private readonly HashSet<string> unchosen = [];
+
+    private Dictionary<string, DeliveryResult> results = [];
+
+    private IReadOnlyList<DeliveryPlan> plans = [];
+
+    private string text = "";
+
+    private bool isSending;
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<AgentSnapshot> Agents { get; set; } = [];
+
+    /// <summary>One agent chosen from its menu; null for all of them.</summary>
+    [Parameter]
+    public string? Only { get; set; }
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    private int ChosenCount => plans.Count(p => p.Route != DeliveryRoute.Skip && chosen.Contains(p.Key));
+
+    private bool CanSend => !isSending && ChosenCount > 0 && text.Trim().Length > 0;
+
+    private string Summary => results.Count == 0
+        ? $"{plans.Count(p => p.Route == DeliveryRoute.Skip)} skipped"
+        : $"{results.Values.Count(r => r.IsSent)} sent · {results.Values.Count(r => !r.IsSent)} not sent";
+
+    protected override void OnParametersSet()
+    {
+        var keys = Agents.Where(a => a.IsAlive && (Only is null ? !a.IsMasterAgent : a.Key == Only)).Select(a => a.Key);
+        plans = Hub.PlanDelivery(keys);
+        foreach (var plan in plans.Where(p => p.Route != DeliveryRoute.Skip && !unchosen.Contains(p.Key)))
+        {
+            chosen.Add(plan.Key);
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await JS.InvokeVoidAsync("fx.focus", "send-text");
+        }
+    }
+
+    private void Toggle(string key, ChangeEventArgs args)
+    {
+        var isOn = args.Value is true;
+        (isOn ? chosen : unchosen).Add(key);
+        (isOn ? unchosen : chosen).Remove(key);
+    }
+
+    private void WrapUp()
+    {
+        text = WRAP_UP;
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape")
+        {
+            await Close();
+        }
+        else if (args.Key == "Enter" && args.CtrlKey && CanSend)
+        {
+            await SendAsync();
+        }
+    }
+
+    private async Task SendAsync()
+    {
+        var keys = plans.Where(p => p.Route != DeliveryRoute.Skip && chosen.Contains(p.Key)).Select(p => p.Key).ToList();
+        var message = text;
+        isSending = true;
+        StateHasChanged();
+        var sent = await Task.Run(() => Hub.Send(keys, message));
+        results = sent.ToDictionary(r => r.Key);
+        isSending = false;
+    }
+
+    private Task Close()
+    {
+        return OnClose.InvokeAsync();
+    }
+}

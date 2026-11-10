@@ -1,0 +1,13 @@
+# .NET build output
+bin/
+obj/
+Publish/
+TestResults/
+*.user
+.vs/
+
+# Python
+__pycache__/
+
+# Unreal and orchestrator state of a host project
+Saved/

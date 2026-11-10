@@ -1,0 +1,20 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Agent Orchestrator",
+	"Description": "Live view of the agent orchestrator (.claude/scripts/orch) inside the editor: who holds the editor lane, the queue, every agent session, and a toggle that pauses agents while you work in the editor.",
+	"Category": "Editor",
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"EnabledByDefault": false,
+	"Modules": [
+		{
+			"Name": "AgentOrchestrator",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit"
+		}
+	]
+}

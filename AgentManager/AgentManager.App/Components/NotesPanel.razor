@@ -1,0 +1,206 @@
+@using Markdig
+@implements IDisposable
+@inject AgentManager.Core.Notes.NotesStore Notes
+@inject IJSRuntime JS
+
+<aside class="notes" @onclick:stopPropagation="true">
+    <div class="panel-head">
+        <span class="panel-title">┤ NOTES ├</span>
+        <span class="dim">@notes.Count</span>
+        <span class="spacer"></span>
+        <span class="save-state @(isSaving ? "saving" : "")">@(isSaving ? "saving…" : "saved ✓")</span>
+        <button class="x" title="Close (Esc or t)" @onclick="OnClose">✕</button>
+    </div>
+
+    <div class="notes-list">
+        <button class="note-new" @onclick="New">+ new note</button>
+        @foreach (var note in notes)
+        {
+            var isCurrent = note.Id == currentId;
+            <div class="note-row @(isCurrent ? "current" : "")" @key="note.Id" @onclick="() => Open(note.Id)">
+                <span class="note-title">@note.Title</span>
+                <span class="note-age">@Ascii.Ago(note.Modified, DateTimeOffset.Now)</span>
+                <button class="note-delete @(armedDelete == note.Id ? "armed" : "")" title="Move to the trash" @onclick="() => Delete(note.Id)" @onclick:stopPropagation="true">@(armedDelete == note.Id ? "delete?" : "✕")</button>
+            </div>
+        }
+        @if (trash.Count > 0)
+        {
+            <button class="note-trash-toggle" @onclick="() => showTrash = !showTrash">@(showTrash ? "▾" : "▸") trash (@trash.Count)</button>
+            @if (showTrash)
+            {
+                @foreach (var note in trash)
+                {
+                    <div class="note-row trashed" @key="@("trash-" + note.Id)">
+                        <span class="note-title">@note.Title</span>
+                        <button class="note-restore" @onclick="() => Restore(note.Id)">restore</button>
+                    </div>
+                }
+            }
+        }
+    </div>
+
+    @if (currentId is not null)
+    {
+        <div class="note-tools">
+            <button title="Bold (Ctrl+B)" @onclick='() => Format("bold")'><b>B</b></button>
+            <button title="Italic (Ctrl+I)" @onclick='() => Format("italic")'><i>I</i></button>
+            <button title="Strike" @onclick='() => Format("strike")'><s>S</s></button>
+            <button title="Code" @onclick='() => Format("code")'>`</button>
+            <span class="tool-sep"></span>
+            <button title="Heading" @onclick='() => Format("heading")'>H</button>
+            <button title="Bullet list" @onclick='() => Format("list")'>•</button>
+            <button title="Checkbox, again to tick it" @onclick='() => Format("check")'>☐</button>
+            <span class="spacer"></span>
+            <button class="@(isPreview ? "on" : "")" title="Preview" @onclick="() => isPreview = !isPreview">@(isPreview ? "edit" : "preview")</button>
+        </div>
+
+        @if (isPreview)
+        {
+            <div class="note-preview">@((MarkupString)Markdig.Markdown.ToHtml(text, PIPELINE))</div>
+        }
+        else
+        {
+            <textarea id="note-editor" class="note-editor" spellcheck="true" placeholder="write anything…" value="@text" @oninput="OnInput" @ref="editor"></textarea>
+        }
+    }
+</aside>
+
+@code {
+    private static readonly Markdig.MarkdownPipeline PIPELINE = new Markdig.MarkdownPipelineBuilder().UseTaskLists().UseEmphasisExtras().DisableHtml().Build();
+
+    private IReadOnlyList<AgentManager.Core.Notes.NoteInfo> notes = [];
+
+    private IReadOnlyList<AgentManager.Core.Notes.NoteInfo> trash = [];
+
+    private ElementReference editor;
+
+    private string? currentId;
+
+    private string text = "";
+
+    private string? armedDelete;
+
+    private bool isSaving;
+
+    private bool isPreview;
+
+    private bool showTrash;
+
+    private bool needsFocus = true;
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    protected override void OnInitialized()
+    {
+        Notes.Saved += OnSaved;
+        Reload();
+        if (notes.Count == 0)
+        {
+            currentId = Notes.Create();
+            Reload();
+        }
+        else
+        {
+            currentId = notes[0].Id;
+        }
+
+        text = Notes.Load(currentId);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (needsFocus && !isPreview && currentId is not null)
+        {
+            needsFocus = false;
+            await JS.InvokeVoidAsync("fx.noteEditor", "note-editor");
+        }
+    }
+
+    private void Reload()
+    {
+        notes = Notes.List();
+        trash = Notes.Trash();
+    }
+
+    private void OnInput(ChangeEventArgs args)
+    {
+        if (currentId is null)
+        {
+            return;
+        }
+
+        text = args.Value?.ToString() ?? "";
+        isSaving = true;
+        Notes.Stage(currentId, text);
+    }
+
+    private void OnSaved()
+    {
+        _ = InvokeAsync(() =>
+        {
+            isSaving = false;
+            Reload();
+            StateHasChanged();
+        });
+    }
+
+    private void Open(string id)
+    {
+        Notes.Flush();
+        currentId = id;
+        text = Notes.Load(id);
+        armedDelete = null;
+        isPreview = false;
+        needsFocus = true;
+    }
+
+    private void New()
+    {
+        Notes.Flush();
+        Open(Notes.Create());
+        Reload();
+    }
+
+    private void Delete(string id)
+    {
+        if (armedDelete != id)
+        {
+            armedDelete = id;
+            return;
+        }
+
+        armedDelete = null;
+        Notes.Delete(id);
+        Reload();
+        if (currentId == id)
+        {
+            if (notes.Count > 0)
+            {
+                Open(notes[0].Id);
+            }
+            else
+            {
+                New();
+            }
+        }
+    }
+
+    private void Restore(string id)
+    {
+        Notes.Restore(id);
+        Reload();
+    }
+
+    private async Task Format(string kind)
+    {
+        isPreview = false;
+        await JS.InvokeVoidAsync("fx.format", "note-editor", kind);
+    }
+
+    public void Dispose()
+    {
+        Notes.Saved -= OnSaved;
+        Notes.Flush();
+    }
+}
