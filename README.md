@@ -4,7 +4,7 @@
 
 A manager for running many agentic AIs on many subscriptions at once: for example 10 Claude agents on 2 Anthropic subscriptions and 4 Codex agents on 3 OpenAI subscriptions.
 
-It is designed for Unreal Engine. A separate orchestration layer lets the agents work together on the editor, on multiple editors and on shared assets without tripping over each other.
+It is designed for Unreal Engine but its fine to use it on anything. A separate orchestration layer lets the agents work together on the editor, on multiple editors and on shared assets without tripping over each other.
 
 ## Master Agent
 
